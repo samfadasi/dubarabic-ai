@@ -1,4 +1,5 @@
 import "dotenv/config";
+
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -14,10 +15,15 @@ type VideoRow = {
   status: string;
 };
 
-const POLL_MS = 3000;
+const POLL_MS = Number(process.env.POLL_MS || 3000);
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function safeErr(e: any) {
+  const msg = e?.message || String(e);
+  return msg.length > 1800 ? msg.slice(0, 1800) + "…" : msg;
 }
 
 async function claimOneJob(): Promise<VideoRow | null> {
@@ -36,7 +42,7 @@ async function claimOneJob(): Promise<VideoRow | null> {
 
   const job = data[0] as VideoRow;
 
-  // optimistic claim
+  // optimistic claim (prevents 2 workers from doing same job)
   const { error: updErr } = await supabaseAdmin
     .from("videos")
     .update({ status: "processing" })
@@ -54,21 +60,57 @@ async function claimOneJob(): Promise<VideoRow | null> {
 async function downloadFromStorage(storagePath: string, outFile: string) {
   const { data, error } = await supabaseAdmin.storage.from("videos").download(storagePath);
   if (error) throw new Error(`Storage download error: ${error.message}`);
+
   const ab = await data.arrayBuffer();
   fs.writeFileSync(outFile, Buffer.from(ab));
 }
 
 async function extractAudio(videoFile: string, audioFile: string) {
-  // output: mono 16k wav (Whisper-friendly later)
-  await execFileAsync("ffmpeg", ["-y", "-i", videoFile, "-vn", "-ac", "1", "-ar", "16000", audioFile]);
+  // mono 16k wav (Whisper-ready)
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-i",
+    videoFile,
+    "-vn",
+    "-ac",
+    "1",
+    "-ar",
+    "16000",
+    audioFile,
+  ]);
+}
+
+async function uploadAudio(jobId: string, audioFile: string) {
+  const audioPath = `audio/${jobId}.wav`;
+  const buf = fs.readFileSync(audioFile);
+
+  const { error } = await supabaseAdmin.storage
+    .from("videos")
+    .upload(audioPath, buf, {
+      contentType: "audio/wav",
+      upsert: true,
+    });
+
+  if (error) throw new Error(`Audio upload error: ${error.message}`);
+
+  return audioPath;
 }
 
 async function markFailed(id: string, reason: string) {
-  await supabaseAdmin.from("videos").update({ status: "failed", transcript: reason }).eq("id", id);
+  await supabaseAdmin
+    .from("videos")
+    .update({ status: "failed", transcript: reason })
+    .eq("id", id);
 }
 
-async function markDone(id: string) {
-  await supabaseAdmin.from("videos").update({ status: "audio_extracted" }).eq("id", id);
+async function markAudioExtracted(id: string, audioPath: string) {
+  await supabaseAdmin
+    .from("videos")
+    .update({
+      status: "audio_extracted",
+      audio_file: audioPath,
+    })
+    .eq("id", id);
 }
 
 async function main() {
@@ -93,15 +135,21 @@ async function main() {
       console.log("Downloaded video");
 
       await extractAudio(videoFile, audioFile);
-      console.log("Extracted audio:", audioFile);
+      console.log("Extracted audio");
 
-      await markDone(job.id);
+      const audioPath = await uploadAudio(job.id, audioFile);
+      console.log("Uploaded audio:", audioPath);
+
+      await markAudioExtracted(job.id, audioPath);
       console.log("Job done:", job.id);
     } catch (e: any) {
-      console.error("Job failed:", job.id, e?.message || e);
-      await markFailed(job.id, e?.message || "Worker error");
+      const reason = safeErr(e);
+      console.error("Job failed:", job.id, reason);
+      await markFailed(job.id, reason);
     } finally {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {}
     }
   }
 }
