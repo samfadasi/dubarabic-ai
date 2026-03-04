@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim
 
-# ffmpeg + fonts (Arabic-ready) + fontconfig for subtitle renderer
+# ffmpeg + ffprobe + Arabic fonts for subtitle burn-in
 RUN apt-get update && apt-get install -y --no-install-recommends \
   ffmpeg \
   fontconfig \
@@ -11,14 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install deps first (better layer caching)
+# deps first for cache
 COPY package.json package-lock.json* ./
 RUN npm ci || npm install
 
-# Copy source and build
+# build TS
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-# Run compiled output
+# run compiled output
 CMD ["node", "dist/index.js"]
