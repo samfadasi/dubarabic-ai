@@ -15,17 +15,14 @@ type VideoRow = {
   status: string;
 };
 
-const POLL_MS = Number(process.env.POLL_MS || 3000);
+const POLL_MS = 3000;
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const OPENAI_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe"; // or gpt-4o-transcribe
+const OPENAI_MODEL =
+  process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-function safeErr(e: any) {
-  const msg = e?.message || String(e);
-  return msg.length > 1800 ? msg.slice(0, 1800) + "…" : msg;
 }
 
 async function claimOneJob(): Promise<VideoRow | null> {
@@ -40,6 +37,7 @@ async function claimOneJob(): Promise<VideoRow | null> {
     console.error("DB select error:", error.message);
     return null;
   }
+
   if (!data || data.length === 0) return null;
 
   const job = data[0] as VideoRow;
@@ -58,8 +56,11 @@ async function claimOneJob(): Promise<VideoRow | null> {
   return job;
 }
 
-async function downloadFromStorage(storagePath: string, outFile: string) {
-  const { data, error } = await supabaseAdmin.storage.from("videos").download(storagePath);
+async function downloadVideo(storagePath: string, outFile: string) {
+  const { data, error } = await supabaseAdmin.storage
+    .from("videos")
+    .download(storagePath);
+
   if (error) throw new Error(`Storage download error: ${error.message}`);
 
   const ab = await data.arrayBuffer();
@@ -67,61 +68,122 @@ async function downloadFromStorage(storagePath: string, outFile: string) {
 }
 
 async function extractAudio(videoFile: string, audioFile: string) {
-  await execFileAsync("ffmpeg", ["-y", "-i", videoFile, "-vn", "-ac", "1", "-ar", "16000", audioFile]);
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-i",
+    videoFile,
+    "-map",
+    "0:a:0",
+    "-vn",
+    "-ac",
+    "1",
+    "-ar",
+    "16000",
+    audioFile,
+  ]);
 }
 
 async function uploadAudio(jobId: string, audioFile: string) {
   const audioPath = `audio/${jobId}.wav`;
-  const buf = fs.readFileSync(audioFile);
 
-  const { error } = await supabaseAdmin.storage.from("videos").upload(audioPath, buf, {
-    contentType: "audio/wav",
-    upsert: true,
-  });
+  const buffer = fs.readFileSync(audioFile);
 
-  if (error) throw new Error(`Audio upload error: ${error.message}`);
+  const { error } = await supabaseAdmin.storage.from("videos").upload(
+    audioPath,
+    buffer,
+    {
+      contentType: "audio/wav",
+      upsert: true,
+    }
+  );
+
+  if (error) {
+    throw new Error(`Audio upload error: ${error.message}`);
+  }
+
   return audioPath;
 }
 
-async function transcribeWithOpenAI(localAudioPath: string) {
-  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is missing in Worker env");
-
-  const audioBuf = fs.readFileSync(localAudioPath);
-  const file = new File([audioBuf], "audio.wav", { type: "audio/wav" });
-
-  const form = new FormData();
-  form.set("file", file);
-  form.set("model", OPENAI_TRANSCRIBE_MODEL);
-  form.set("response_format", "json");
-  // form.set("language", "en"); // optional (leave auto)
-  // form.set("prompt", "Transcribe accurately. Include proper punctuation."); // optional
-
-  const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-    body: form,
-  });
-
-  const json: any = await resp.json().catch(() => ({}));
-  if (!resp.ok) {
-    throw new Error(`OpenAI transcription error: ${resp.status} ${resp.statusText} - ${JSON.stringify(json)}`);
+async function transcribe(localAudioPath: string) {
+  if (!OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY missing");
   }
 
-  const text = (json?.text || "").trim();
-  if (!text) throw new Error("OpenAI returned empty transcript");
+  const audioBuffer = fs.readFileSync(localAudioPath);
+  const file = new File([audioBuffer], "audio.wav", {
+    type: "audio/wav",
+  });
+
+  async function call(model: string) {
+    const form = new FormData();
+    form.set("file", file);
+    form.set("model", model);
+    form.set("response_format", "json");
+
+    const resp = await fetch(
+      "https://api.openai.com/v1/audio/transcriptions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: form,
+      }
+    );
+
+    const json: any = await resp.json().catch(() => ({}));
+
+    if (!resp.ok) {
+      throw new Error(
+        `OpenAI transcription error: ${resp.status} ${JSON.stringify(json)}`
+      );
+    }
+
+    return String(json?.text || "").trim();
+  }
+
+  let text = await call(OPENAI_MODEL);
+
+  if (!text) {
+    console.log("Empty transcript, trying whisper-1 fallback");
+    text = await call("whisper-1");
+  }
+
+  if (!text) {
+    throw new Error("No speech detected");
+  }
+
   return text;
 }
 
 async function markFailed(id: string, reason: string) {
-  await supabaseAdmin.from("videos").update({ status: "failed", transcript: reason }).eq("id", id);
+  await supabaseAdmin
+    .from("videos")
+    .update({
+      status: "failed",
+      transcript: reason,
+    })
+    .eq("id", id);
 }
 
-async function markAudioExtracted(id: string, audioPath: string) {
-  await supabaseAdmin.from("videos").update({ status: "audio_extracted", audio_file: audioPath }).eq("id", id);
+async function markAudio(id: string, audioPath: string) {
+  await supabaseAdmin
+    .from("videos")
+    .update({
+      status: "audio_extracted",
+      audio_file: audioPath,
+    })
+    .eq("id", id);
 }
 
 async function markTranscribed(id: string, transcript: string) {
-  await supabaseAdmin.from("videos").update({ status: "transcribed", transcript }).eq("id", id);
+  await supabaseAdmin
+    .from("videos")
+    .update({
+      status: "transcribed",
+      transcript,
+    })
+    .eq("id", id);
 }
 
 async function main() {
@@ -135,34 +197,34 @@ async function main() {
       continue;
     }
 
-    console.log("Claimed job:", job.id, job.original_video);
+    console.log("Processing job:", job.id);
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dubarabic-"));
+
     const videoFile = path.join(tmpDir, "input.mp4");
     const audioFile = path.join(tmpDir, "audio.wav");
 
     try {
-      await downloadFromStorage(job.original_video, videoFile);
-      console.log("Downloaded video");
+      await downloadVideo(job.original_video, videoFile);
+      console.log("Video downloaded");
 
       await extractAudio(videoFile, audioFile);
-      console.log("Extracted audio");
+      console.log("Audio extracted");
 
       const audioPath = await uploadAudio(job.id, audioFile);
-      console.log("Uploaded audio:", audioPath);
+      console.log("Audio uploaded");
 
-      await markAudioExtracted(job.id, audioPath);
+      await markAudio(job.id, audioPath);
 
-      // Transcribe (Whisper via OpenAI Audio Transcriptions)
-      const transcript = await transcribeWithOpenAI(audioFile);
-      console.log("Transcribed chars:", transcript.length);
+      const transcript = await transcribe(audioFile);
+      console.log("Transcript length:", transcript.length);
 
       await markTranscribed(job.id, transcript);
-      console.log("Job done:", job.id);
-    } catch (e: any) {
-      const reason = safeErr(e);
-      console.error("Job failed:", job.id, reason);
-      await markFailed(job.id, reason);
+
+      console.log("Job completed:", job.id);
+    } catch (err: any) {
+      console.error("Job failed:", err?.message || err);
+      await markFailed(job.id, err?.message || "Worker error");
     } finally {
       try {
         fs.rmSync(tmpDir, { recursive: true, force: true });
