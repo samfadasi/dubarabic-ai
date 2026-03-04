@@ -1,33 +1,48 @@
 import "dotenv/config";
 
-import express, { Request, Response } from "express";
+import express from "express";
 import cors from "cors";
 import { z } from "zod";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 
 const app = express();
 
-app.use(cors());
+/*
+--------------------------------------------------
+Middleware
+--------------------------------------------------
+*/
+
+app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "2mb" }));
 
 /*
-Root endpoint
+--------------------------------------------------
+Root
+--------------------------------------------------
 */
-app.get("/", (_req: Request, res: Response) => {
+
+app.get("/", (_req, res) => {
   res.status(200).send("DubArabic AI API running");
 });
 
 /*
-Health check
+--------------------------------------------------
+Health Check
+--------------------------------------------------
 */
-app.get("/health", (_req: Request, res: Response) => {
+
+app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
 /*
-Generate signed upload URL for Supabase Storage
+--------------------------------------------------
+Generate Signed Upload URL
+--------------------------------------------------
 */
-app.post("/upload/signed-url", async (req: Request, res: Response) => {
+
+app.post("/upload/signed-url", async (req, res) => {
   try {
     const schema = z.object({
       fileName: z.string().min(1),
@@ -52,7 +67,7 @@ app.post("/upload/signed-url", async (req: Request, res: Response) => {
       .createSignedUploadUrl(path);
 
     if (error) {
-      console.error(error);
+      console.error("Supabase signed-url error:", error);
       return res.status(500).json({ error: error.message });
     }
 
@@ -63,15 +78,18 @@ app.post("/upload/signed-url", async (req: Request, res: Response) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("signed-url endpoint error:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 /*
-Create video record in database
+--------------------------------------------------
+Create Video Record
+--------------------------------------------------
 */
-app.post("/videos/create", async (req: Request, res: Response) => {
+
+app.post("/videos/create", async (req, res) => {
   try {
     const schema = z.object({
       user_email: z.string().email().optional(),
@@ -99,7 +117,7 @@ app.post("/videos/create", async (req: Request, res: Response) => {
       .single();
 
     if (error) {
-      console.error(error);
+      console.error("DB insert error:", error);
       return res.status(500).json({ error: error.message });
     }
 
@@ -108,16 +126,19 @@ app.post("/videos/create", async (req: Request, res: Response) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("videos/create error:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 /*
-Start server
+--------------------------------------------------
+Server Start
+--------------------------------------------------
 */
-const port = process.env.PORT ? Number(process.env.PORT) : 3000;
 
-app.listen(port, () => {
-  console.log(`DubArabic API running on port ${port}`);
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+
+app.listen(PORT, () => {
+  console.log(`🚀 DubArabic API running on port ${PORT}`);
 });
