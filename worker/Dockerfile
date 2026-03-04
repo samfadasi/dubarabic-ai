@@ -1,13 +1,24 @@
-FROM node:22-slim
+FROM node:22-bookworm-slim
 
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# ffmpeg + fonts (Arabic-ready) + fontconfig for subtitle renderer
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  ffmpeg \
+  fontconfig \
+  fonts-noto \
+  fonts-noto-core \
+  fonts-noto-extra \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm install
 
+# Install deps first (better layer caching)
+COPY package.json package-lock.json* ./
+RUN npm ci || npm install
+
+# Copy source and build
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-CMD ["npm", "start"]
+# Run compiled output
+CMD ["node", "dist/index.js"]
