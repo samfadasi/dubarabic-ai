@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>DubArabic AI</title>
+    <style>
+      body{font-family:system-ui;max-width:760px;margin:40px auto;padding:16px}
+      .card{border:1px solid #ddd;border-radius:12px;padding:16px}
+      button{padding:10px 14px;border-radius:10px;border:1px solid #111;background:#111;color:#fff;cursor:pointer}
+      button:disabled{background:#999;border-color:#999;cursor:not-allowed}
+      .muted{color:#666}
+      .log{background:#f7f7f7;border-radius:10px;padding:12px;margin-top:12px;white-space:pre-wrap}
+      input{margin-top:6px}
+    </style>
+  </head>
+  <body>
+    <h1>DubArabic AI</h1>
+    <p class="muted">ارفع فيديوك → نخزّنو في Supabase → وبعدها نمشي للمعالجة.</p>
+
+    <div class="card">
+      <label><b>اختار فيديو</b></label><br/>
+      <input id="file" type="file" accept="video/*" />
+      <br/><br/>
+      <button id="btn" disabled>Upload</button>
+
+      <div id="out" class="log" style="display:none"></div>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
