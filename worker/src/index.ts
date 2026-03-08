@@ -11,20 +11,23 @@ const execFileAsync = promisify(execFile);
 
 type Role = "audio" | "transcribe" | "translate" | "tts" | "render";
 const ROLE = (process.env.PIPELINE_ROLE || "audio") as Role;
-
 const POLL_MS = Number(process.env.POLL_MS || 1500);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
 const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
 const OPENAI_TTS_VOICE = process.env.OPENAI_TTS_VOICE || "marin";
-
-// للحصول على timestamps (segments) بشكل مضمون
 const OPENAI_SRT_TRANSCRIBE_MODEL =
   process.env.OPENAI_SRT_TRANSCRIBE_MODEL || "whisper-1";
 
 type Segment = {
   id?: number | string;
+  start: number;
+  end: number;
+  text: string;
+};
+
+type SubtitleSegment = {
   start: number;
   end: number;
   text: string;
@@ -44,6 +47,7 @@ async function downloadFromStorage(storagePath: string, outFile: string) {
     .from("videos")
     .download(storagePath);
   if (error) throw new Error(`Storage download error: ${error.message}`);
+
   const ab = await data.arrayBuffer();
   fs.writeFileSync(outFile, Buffer.from(ab));
 }
@@ -69,14 +73,11 @@ async function markFailed(id: string, reason: string) {
     .eq("id", id);
 }
 
-/**
- * claim job safely: read oldest, then optimistic update status -> processing
- */
 async function claimJob(fromStatus: string) {
   const { data, error } = await supabaseAdmin
     .from("videos")
     .select(
-      "id, original_video, audio_file, transcript, transcript_segments, translated_text, arabic_audio, final_video, srt_file, burn_in, burned_video, status, created_at"
+      "id, original_video, audio_file, transcript, transcript_segments, translated_text, arabic_audio, final_video, final_soft_video, srt_file, burn_in, burned_video, status, created_at"
     )
     .eq("status", fromStatus)
     .order("created_at", { ascending: true })
@@ -100,12 +101,11 @@ async function claimJob(fromStatus: string) {
   return job;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Stage: AUDIO (extract wav 16k mono + upload to storage)
-// ─────────────────────────────────────────────────────────────
+// ───────────────────────────────
+// AUDIO
+// ───────────────────────────────
 
 async function extractAudio(videoFile: string, audioFile: string) {
-  // mono 16k wav
   await execFileAsync("ffmpeg", [
     "-y",
     "-i",
@@ -126,19 +126,22 @@ async function stageAudio() {
   if (!job) return;
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dubarabic-audio-"));
-  const videoFile = path.join(tmpDir, "input.mp4");
+  const videoLocal = path.join(tmpDir, "in.mp4");
   const audioLocal = path.join(tmpDir, "audio.wav");
 
   try {
-    await downloadFromStorage(job.original_video, videoFile);
-    await extractAudio(videoFile, audioLocal);
+    await downloadFromStorage(job.original_video, videoLocal);
+    await extractAudio(videoLocal, audioLocal);
 
     const audioPath = `audio/${job.id}.wav`;
     await uploadToStorage(audioPath, audioLocal, "audio/wav");
 
     await supabaseAdmin
       .from("videos")
-      .update({ status: "audio_extracted", audio_file: audioPath })
+      .update({
+        status: "audio_extracted",
+        audio_file: audioPath,
+      })
       .eq("id", job.id);
 
     console.log("audio_extracted:", job.id);
@@ -152,10 +155,9 @@ async function stageAudio() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Stage: TRANSCRIBE (verbose_json + segment timestamps)
-// Fallback guaranteed: if segments missing -> 1 segment using ffprobe duration
-// ─────────────────────────────────────────────────────────────
+// ───────────────────────────────
+// TRANSCRIBE + GUARANTEED SEGMENTS
+// ───────────────────────────────
 
 async function getAudioDurationSeconds(audioPath: string): Promise<number> {
   const { stdout } = await execFileAsync("ffprobe", [
@@ -169,6 +171,34 @@ async function getAudioDurationSeconds(audioPath: string): Promise<number> {
   ]);
   const d = Number(String(stdout).trim());
   return Number.isFinite(d) && d > 0 ? d : 1;
+}
+
+function normalizeText(text: string) {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.!?،؛:])/g, "$1")
+    .trim();
+}
+
+function splitTranscriptToSegments(text: string, duration: number): Segment[] {
+  const clean = normalizeText(text);
+
+  const parts = clean
+    .split(/(?<=[.!?؟])/)
+    .map((s) => normalizeText(s))
+    .filter(Boolean);
+
+  if (parts.length <= 1) {
+    return [{ start: 0, end: Math.max(1.5, duration), text: clean || "..." }];
+  }
+
+  const segDur = duration / parts.length;
+
+  return parts.map((part, i) => ({
+    start: i * segDur,
+    end: Math.min(duration, (i + 1) * segDur),
+    text: part,
+  }));
 }
 
 async function openaiTranscribeVerboseSegments(localAudioPath: string): Promise<{
@@ -213,17 +243,13 @@ async function openaiTranscribeVerboseSegments(localAudioPath: string): Promise<
     }))
     .filter(
       (s: Segment) =>
-        Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start && s.text
+        Number.isFinite(s.start) &&
+        Number.isFinite(s.end) &&
+        s.end > s.start &&
+        s.text
     );
 
-  // ✅ guaranteed fallback
-  if (!segments.length) {
-    const dur = await getAudioDurationSeconds(localAudioPath);
-    if (!text) throw new Error("Empty transcript and no segments");
-    segments = [{ start: 0, end: dur, text }];
-  }
-
-  if (!text) {
+  if (!text && segments.length) {
     text = segments.map((s) => s.text).join(" ").trim();
   }
 
@@ -238,21 +264,28 @@ async function stageTranscribe() {
   const audioLocal = path.join(tmpDir, "audio.wav");
 
   try {
-    if (!job.audio_file) throw new Error("audio_file missing on row");
+    if (!job.audio_file) throw new Error("audio_file missing");
     await downloadFromStorage(job.audio_file, audioLocal);
 
+    const duration = await getAudioDurationSeconds(audioLocal);
     const { text, segments } = await openaiTranscribeVerboseSegments(audioLocal);
+
+    const transcript = text?.trim();
+    if (!transcript) throw new Error("Empty transcript");
+
+    const finalSegments =
+      segments && segments.length ? segments : splitTranscriptToSegments(transcript, duration);
 
     await supabaseAdmin
       .from("videos")
       .update({
         status: "transcribed",
-        transcript: text,
-        transcript_segments: segments,
+        transcript,
+        transcript_segments: finalSegments,
       })
       .eq("id", job.id);
 
-    console.log("transcribed:", job.id, "segments:", segments.length);
+    console.log("transcribed:", job.id, "segments:", finalSegments.length);
   } catch (e: any) {
     console.error("transcribe failed:", job.id, safeErr(e));
     await markFailed(job.id, safeErr(e));
@@ -263,9 +296,120 @@ async function stageTranscribe() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Stage: TRANSLATE (segment-by-segment) + build & upload SRT
-// ─────────────────────────────────────────────────────────────
+// ───────────────────────────────
+// TRANSLATE + YOUTUBE-STYLE SRT
+// ───────────────────────────────
+
+function mergeShortSegments(
+  segments: SubtitleSegment[],
+  options?: {
+    minDuration?: number;
+    maxDuration?: number;
+    minChars?: number;
+    maxChars?: number;
+    maxGap?: number;
+  }
+) {
+  const {
+    minDuration = 1.2,
+    maxDuration = 6.0,
+    minChars = 18,
+    maxChars = 90,
+    maxGap = 0.35,
+  } = options || {};
+
+  if (!segments.length) return [];
+
+  const out: SubtitleSegment[] = [];
+  let current = { ...segments[0] };
+
+  for (let i = 1; i < segments.length; i++) {
+    const next = segments[i];
+    const currentDuration = current.end - current.start;
+    const gap = next.start - current.end;
+
+    const shouldMerge =
+      (currentDuration < minDuration || current.text.length < minChars) &&
+      gap <= maxGap &&
+      (next.end - current.start) <= maxDuration &&
+      (current.text.length + 1 + next.text.length) <= maxChars;
+
+    if (shouldMerge) {
+      current.end = next.end;
+      current.text = normalizeText(`${current.text} ${next.text}`);
+    } else {
+      out.push(current);
+      current = { ...next };
+    }
+  }
+
+  out.push(current);
+
+  for (let i = 0; i < out.length; i++) {
+    const seg = out[i];
+    const dur = seg.end - seg.start;
+    if (dur < minDuration) {
+      seg.end = seg.start + minDuration;
+      if (i < out.length - 1 && seg.end > out[i + 1].start - 0.05) {
+        seg.end = Math.max(seg.start + 0.8, out[i + 1].start - 0.05);
+      }
+    }
+  }
+
+  for (let i = 0; i < out.length - 1; i++) {
+    const gap = out[i + 1].start - out[i].end;
+    if (gap > 0.6) {
+      out[i].end = Math.min(out[i + 1].start - 0.1, out[i].end + 0.4);
+    }
+  }
+
+  return out;
+}
+
+function wrapSubtitleBalanced(text: string, maxLineLen = 38) {
+  const clean = normalizeText(text);
+
+  if (clean.length <= maxLineLen) return clean;
+
+  const words = clean.split(" ");
+  if (words.length <= 2) return clean;
+
+  let bestBreak = -1;
+  let bestScore = Infinity;
+
+  for (let i = 1; i < words.length; i++) {
+    const left = words.slice(0, i).join(" ");
+    const right = words.slice(i).join(" ");
+
+    if (left.length > maxLineLen || right.length > maxLineLen) continue;
+
+    const score = Math.abs(left.length - right.length);
+    if (score < bestScore) {
+      bestScore = score;
+      bestBreak = i;
+    }
+  }
+
+  if (bestBreak === -1) {
+    let line1 = "";
+    let line2 = "";
+
+    for (const word of words) {
+      const test = line1 ? `${line1} ${word}` : word;
+      if (test.length <= maxLineLen) {
+        line1 = test;
+      } else {
+        line2 = line2 ? `${line2} ${word}` : word;
+      }
+    }
+
+    return line2 ? `${line1}\n${line2}` : line1;
+  }
+
+  const left = words.slice(0, bestBreak).join(" ");
+  const right = words.slice(bestBreak).join(" ");
+  return `${left}\n${right}`;
+}
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -278,28 +422,6 @@ function srtTime(sec: number) {
   const s = Math.floor((ms % 60000) / 1000);
   const mm = ms % 1000;
   return `${pad2(h)}:${pad2(m)}:${pad2(s)},${String(mm).padStart(3, "0")}`;
-}
-
-function wrapSubtitle(text: string, maxLen = 42) {
-  const t = text.replace(/\s+/g, " ").trim();
-  if (t.length <= maxLen) return t;
-
-  const words = t.split(" ");
-  const lines: string[] = [];
-  let cur = "";
-
-  for (const w of words) {
-    const next = cur ? `${cur} ${w}` : w;
-    if (next.length <= maxLen) cur = next;
-    else {
-      if (cur) lines.push(cur);
-      cur = w;
-      if (lines.length === 1) break; // حد أقصى سطرين
-    }
-  }
-  if (cur && lines.length < 2) lines.push(cur);
-
-  return lines.slice(0, 2).join("\n");
 }
 
 async function openaiTranslateArabic(text: string) {
@@ -340,12 +462,26 @@ async function openaiTranslateArabic(text: string) {
 }
 
 function buildSrt(segments: Array<Segment & { ar: string }>) {
+  const normalized: SubtitleSegment[] = segments.map((s) => ({
+    start: s.start,
+    end: s.end,
+    text: normalizeText(s.ar),
+  }));
+
+  const merged = mergeShortSegments(normalized, {
+    minDuration: 1.3,
+    maxDuration: 6.0,
+    minChars: 16,
+    maxChars: 84,
+    maxGap: 0.35,
+  });
+
   let i = 1;
-  return segments
+  return merged
     .map((s) => {
       const start = srtTime(s.start);
       const end = srtTime(s.end);
-      const text = wrapSubtitle(s.ar);
+      const text = wrapSubtitleBalanced(s.text, 38);
       return `${i++}\n${start} --> ${end}\n${text}\n`;
     })
     .join("\n");
@@ -398,9 +534,9 @@ async function stageTranslate() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Stage: TTS (arabic audio)
-// ─────────────────────────────────────────────────────────────
+// ───────────────────────────────
+// TTS
+// ───────────────────────────────
 
 async function openaiTTS(text: string, outFile: string) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
@@ -439,7 +575,6 @@ async function stageTTS() {
 
   try {
     if (!job.translated_text) throw new Error("translated_text missing");
-
     await openaiTTS(job.translated_text, ttsLocal);
 
     const audioPath = `tts/${job.id}.wav`;
@@ -447,7 +582,10 @@ async function stageTTS() {
 
     await supabaseAdmin
       .from("videos")
-      .update({ status: "tts_generated", arabic_audio: audioPath })
+      .update({
+        status: "tts_generated",
+        arabic_audio: audioPath,
+      })
       .eq("id", job.id);
 
     console.log("tts_generated:", job.id);
@@ -461,12 +599,11 @@ async function stageTTS() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Stage: RENDER (dubbed mp4 + optional burn-in subtitles)
-// ─────────────────────────────────────────────────────────────
+// ───────────────────────────────
+// RENDER: dubbed + soft subs + optional burn-in
+// ───────────────────────────────
 
 async function mergeAudioVideo(videoIn: string, audioIn: string, outVideo: string) {
-  // fastest: copy video, encode audio AAC
   await execFileAsync("ffmpeg", [
     "-y",
     "-i",
@@ -486,14 +623,48 @@ async function mergeAudioVideo(videoIn: string, audioIn: string, outVideo: strin
   ]);
 }
 
+async function softSubtitles(
+  videoIn: string,
+  audioIn: string,
+  srtLocal: string,
+  outVideo: string
+) {
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-i",
+    videoIn,
+    "-i",
+    audioIn,
+    "-i",
+    srtLocal,
+    "-map",
+    "0:v:0",
+    "-map",
+    "1:a:0",
+    "-map",
+    "2:0",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac",
+    "-c:s",
+    "mov_text",
+    "-metadata:s:s:0",
+    "language=ara",
+    outVideo,
+  ]);
+}
+
 async function burnSubtitles(
   videoIn: string,
   audioIn: string,
   srtLocal: string,
   outVideo: string
 ) {
-  // burn-in requires re-encode video
-  const vf = `subtitles=${srtLocal.replace(/\\/g, "/")}:force_style='FontName=Noto Naskh Arabic,FontSize=22,Outline=2,BorderStyle=3'`;
+  const vf = `subtitles=${srtLocal.replace(
+    /\\/g,
+    "/"
+  )}:force_style='FontName=Noto Naskh Arabic,FontSize=22,Outline=2,BorderStyle=3'`;
 
   await execFileAsync("ffmpeg", [
     "-y",
@@ -529,6 +700,7 @@ async function stageRender() {
   const audioLocal = path.join(tmpDir, "ar.wav");
   const outLocal = path.join(tmpDir, "out.mp4");
   const srtLocal = path.join(tmpDir, "sub.srt");
+  const softLocal = path.join(tmpDir, "soft.mp4");
   const burnedLocal = path.join(tmpDir, "burned.mp4");
 
   try {
@@ -538,21 +710,31 @@ async function stageRender() {
     await downloadFromStorage(job.original_video, videoLocal);
     await downloadFromStorage(job.arabic_audio, audioLocal);
 
-    // 1) dubbed (fast)
+    // dubbed fast
     await mergeAudioVideo(videoLocal, audioLocal, outLocal);
     const finalPath = `final/${job.id}.mp4`;
     await uploadToStorage(finalPath, outLocal, "video/mp4");
 
-    // 2) optional burn-in
+    // soft subtitles
+    let finalSoftPath: string | null = null;
+    if (job.srt_file) {
+      await downloadFromStorage(job.srt_file, srtLocal);
+      await softSubtitles(videoLocal, audioLocal, srtLocal, softLocal);
+      finalSoftPath = `final_soft/${job.id}.mp4`;
+      await uploadToStorage(finalSoftPath, softLocal, "video/mp4");
+    }
+
+    // burn-in optional
     let burnedPath: string | null = null;
     const burn = Boolean(job.burn_in);
 
     if (burn) {
       if (!job.srt_file) throw new Error("burn_in=true but srt_file missing");
-      await downloadFromStorage(job.srt_file, srtLocal);
+      if (!fs.existsSync(srtLocal)) {
+        await downloadFromStorage(job.srt_file, srtLocal);
+      }
 
       await burnSubtitles(videoLocal, audioLocal, srtLocal, burnedLocal);
-
       burnedPath = `burned/${job.id}.mp4`;
       await uploadToStorage(burnedPath, burnedLocal, "video/mp4");
     }
@@ -562,11 +744,12 @@ async function stageRender() {
       .update({
         status: "completed",
         final_video: finalPath,
+        final_soft_video: finalSoftPath,
         burned_video: burnedPath,
       })
       .eq("id", job.id);
 
-    console.log("completed:", job.id, "burned:", burn ? "yes" : "no");
+    console.log("completed:", job.id, "soft:", !!finalSoftPath, "burned:", burn);
   } catch (e: any) {
     console.error("render failed:", job.id, safeErr(e));
     await markFailed(job.id, safeErr(e));
@@ -577,9 +760,9 @@ async function stageRender() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Main loop
-// ─────────────────────────────────────────────────────────────
+// ───────────────────────────────
+// MAIN
+// ───────────────────────────────
 
 async function runOnce() {
   if (ROLE === "audio") return stageAudio();
