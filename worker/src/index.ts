@@ -19,9 +19,16 @@ const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
 const OPENAI_SRT_TRANSCRIBE_MODEL =
   process.env.OPENAI_SRT_TRANSCRIBE_MODEL || "whisper-1";
 
-// أصوات افتراضية قابلة للتغيير من البيئة
+// أصوات قابلة للتعديل من البيئة
 const OPENAI_TTS_VOICE_MALE = process.env.OPENAI_TTS_VOICE_MALE || "alloy";
 const OPENAI_TTS_VOICE_FEMALE = process.env.OPENAI_TTS_VOICE_FEMALE || "marin";
+
+// سرعة الكلام في TTS
+const TTS_SPEED_MALE = Number(process.env.TTS_SPEED_MALE || "1.00");
+const TTS_SPEED_FEMALE = Number(process.env.TTS_SPEED_FEMALE || "1.02");
+
+// لو المقطع العربي أطول من الزمن الأصلي، نسمح بتمديد بسيط
+const MAX_STRETCH_RATIO = Number(process.env.MAX_STRETCH_RATIO || "1.15");
 
 type Segment = {
   id?: number | string;
@@ -44,7 +51,7 @@ function sleep(ms: number) {
 
 function safeErr(e: any) {
   const msg = e?.message || String(e);
-  return msg.length > 2500 ? msg.slice(0, 2500) + "…" : msg;
+  return msg.length > 3000 ? msg.slice(0, 3000) + "…" : msg;
 }
 
 function normalizeText(text: string) {
@@ -72,12 +79,11 @@ async function uploadToStorage(
 ) {
   const buf = fs.readFileSync(localFile);
 
-  const { error } = await supabaseAdmin.storage
-    .from("videos")
-    .upload(storagePath, buf, {
-      contentType,
-      upsert: true,
-    });
+  const { error } = await supabaseAdmin.storage.from("videos").upload(
+    storagePath,
+    buf,
+    { contentType, upsert: true }
+  );
 
   if (error) throw new Error(`Storage upload error: ${error.message}`);
 }
@@ -552,7 +558,7 @@ async function stageTranslate() {
 }
 
 // ───────────────────────────────
-// TTS WITH AUTO VOICE MATCHING
+// TTS SEGMENT-BASED + AUTO VOICE MATCHING
 // ───────────────────────────────
 
 async function detectVoiceType(audioPath: string): Promise<VoiceType> {
@@ -569,9 +575,7 @@ async function detectVoiceType(audioPath: string): Promise<VoiceType> {
 
     const pitchMatches = stderr.match(/Mean_frequency:\s*([0-9.]+)/g);
 
-    if (!pitchMatches || pitchMatches.length === 0) {
-      return "male";
-    }
+    if (!pitchMatches || pitchMatches.length === 0) return "male";
 
     const values = pitchMatches
       .map((v) => Number(v.split(":")[1]))
@@ -591,7 +595,16 @@ function chooseArabicVoice(type: VoiceType) {
   return type === "female" ? OPENAI_TTS_VOICE_FEMALE : OPENAI_TTS_VOICE_MALE;
 }
 
-async function openaiTTS(text: string, outFile: string, voice: string) {
+function chooseVoiceSpeed(type: VoiceType) {
+  return type === "female" ? TTS_SPEED_FEMALE : TTS_SPEED_MALE;
+}
+
+async function openaiTTS(
+  text: string,
+  outFile: string,
+  voice: string,
+  speed = 1
+) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
 
   const payload = {
@@ -599,6 +612,7 @@ async function openaiTTS(text: string, outFile: string, voice: string) {
     voice,
     input: text,
     format: "wav",
+    speed,
   };
 
   const resp = await fetch("https://api.openai.com/v1/audio/speech", {
@@ -619,29 +633,150 @@ async function openaiTTS(text: string, outFile: string, voice: string) {
   fs.writeFileSync(outFile, buf);
 }
 
+async function getWaveDurationSeconds(wavPath: string): Promise<number> {
+  const { stdout } = await execFileAsync("ffprobe", [
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration",
+    "-of",
+    "default=noprint_wrappers=1:nokey=1",
+    wavPath,
+  ]);
+
+  const d = Number(String(stdout).trim());
+  return Number.isFinite(d) && d > 0 ? d : 0.5;
+}
+
+async function createSilenceWav(durationSeconds: number, outFile: string) {
+  const d = Math.max(0.01, durationSeconds);
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    `anullsrc=r=24000:cl=mono`,
+    "-t",
+    String(d),
+    "-acodec",
+    "pcm_s16le",
+    outFile,
+  ]);
+}
+
+async function concatWavs(files: string[], outFile: string) {
+  const listFile = `${outFile}.txt`;
+  const content = files.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n");
+  fs.writeFileSync(listFile, content, "utf8");
+
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-f",
+    "concat",
+    "-safe",
+    "0",
+    "-i",
+    listFile,
+    "-c",
+    "copy",
+    outFile,
+  ]);
+
+  try {
+    fs.unlinkSync(listFile);
+  } catch {}
+}
+
 async function stageTTS() {
   const job = await claimJob("translated");
   if (!job) return;
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dubarabic-tts-"));
   const sourceAudioLocal = path.join(tmpDir, "src.wav");
-  const ttsLocal = path.join(tmpDir, "ar.wav");
+  const finalTtsLocal = path.join(tmpDir, "ar_timeline.wav");
 
   try {
-    if (!job.translated_text) throw new Error("translated_text missing");
     if (!job.audio_file) throw new Error("audio_file missing");
+    if (!job.translated_text) throw new Error("translated_text missing");
+    if (!Array.isArray(job.transcript_segments) || !job.transcript_segments.length) {
+      throw new Error("transcript_segments missing/empty for segment-based TTS");
+    }
 
     await downloadFromStorage(job.audio_file, sourceAudioLocal);
 
     const voiceType = await detectVoiceType(sourceAudioLocal);
     const selectedVoice = chooseArabicVoice(voiceType);
+    const selectedSpeed = chooseVoiceSpeed(voiceType);
 
     console.log("voice detected:", voiceType, "tts voice:", selectedVoice);
 
-    await openaiTTS(job.translated_text, ttsLocal, selectedVoice);
+    const translatedSegments = job.translated_text
+      ? null
+      : null; // placeholder for clarity
+
+    // نعيد ترجمة المقاطع من transcript_segments لو ما كانت محفوظة منفصلة
+    // بما أن translated_text الكامل موجود فقط، نعيد الترجمة segment-by-segment من النص الأصلي
+    const originalSegments: Segment[] = job.transcript_segments as Segment[];
+
+    const stitchedParts: string[] = [];
+    let currentTimeline = 0;
+
+    for (let i = 0; i < originalSegments.length; i++) {
+      const seg = originalSegments[i];
+      const ar = await openaiTranslateArabic(seg.text);
+
+      const segmentTts = path.join(tmpDir, `seg_${i}.wav`);
+      await openaiTTS(ar, segmentTts, selectedVoice, selectedSpeed);
+
+      let segAudioDuration = await getWaveDurationSeconds(segmentTts);
+      const targetStart = Math.max(0, seg.start);
+      const targetEnd = Math.max(targetStart + 0.2, seg.end);
+      const targetDuration = targetEnd - targetStart;
+
+      // لو هناك فجوة قبل المقطع، نضيف صمت
+      if (targetStart > currentTimeline) {
+        const silenceDur = targetStart - currentTimeline;
+        const silenceFile = path.join(tmpDir, `silence_${i}.wav`);
+        await createSilenceWav(silenceDur, silenceFile);
+        stitchedParts.push(silenceFile);
+        currentTimeline += silenceDur;
+      }
+
+      // لو المقطع العربي أطول من الهدف، نسمح بتمديد بسيط في التايملاين
+      let allowedDuration = targetDuration * MAX_STRETCH_RATIO;
+
+      if (segAudioDuration > allowedDuration) {
+        // نحاول نسرّع المقطع قليلاً باستخدام atempo
+        const spedFile = path.join(tmpDir, `seg_${i}_sped.wav`);
+        const tempo = Math.min(1.35, segAudioDuration / allowedDuration);
+
+        await execFileAsync("ffmpeg", [
+          "-y",
+          "-i",
+          segmentTts,
+          "-filter:a",
+          `atempo=${tempo.toFixed(3)}`,
+          spedFile,
+        ]);
+
+        fs.unlinkSync(segmentTts);
+        fs.renameSync(spedFile, segmentTts);
+        segAudioDuration = await getWaveDurationSeconds(segmentTts);
+      }
+
+      stitchedParts.push(segmentTts);
+      currentTimeline += segAudioDuration;
+    }
+
+    // لو الصوت النهائي فاضي لأي سبب
+    if (!stitchedParts.length) {
+      throw new Error("No TTS segments were generated");
+    }
+
+    await concatWavs(stitchedParts, finalTtsLocal);
 
     const audioPath = `tts/${job.id}.wav`;
-    await uploadToStorage(audioPath, ttsLocal, "audio/wav");
+    await uploadToStorage(audioPath, finalTtsLocal, "audio/wav");
 
     await supabaseAdmin
       .from("videos")
@@ -651,7 +786,7 @@ async function stageTTS() {
       })
       .eq("id", job.id);
 
-    console.log("tts_generated:", job.id);
+    console.log("tts_generated:", job.id, "segment_based:", true);
   } catch (e: any) {
     console.error("tts failed:", job.id, safeErr(e));
     await markFailed(job.id, safeErr(e));
