@@ -28,7 +28,7 @@ app.get("/", (_req, res) => {
 
 /*
 --------------------------------------------------
-Health Check
+Health
 --------------------------------------------------
 */
 
@@ -108,13 +108,8 @@ app.post("/videos/create", async (req, res) => {
       });
     }
 
-    const {
-      user_email,
-      original_path,
-      dialect,
-      subtitle_mode,
-      burn_in,
-    } = parsed.data;
+    const { user_email, original_path, dialect, subtitle_mode, burn_in } =
+      parsed.data;
 
     const { data, error } = await supabaseAdmin
       .from("videos")
@@ -145,7 +140,7 @@ app.post("/videos/create", async (req, res) => {
 
 /*
 --------------------------------------------------
-Server Start
+Start Server
 --------------------------------------------------
 */
 
@@ -153,4 +148,4 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 app.listen(PORT, () => {
   console.log(`🚀 DubArabic API running on port ${PORT}`);
-});});
+});
