@@ -24,7 +24,7 @@
       }
 
       .container {
-        max-width: 760px;
+        max-width: 820px;
         margin: 40px auto;
         padding: 16px;
       }
@@ -46,16 +46,34 @@
         background: #fff;
       }
 
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+
+      @media (max-width: 700px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
       label {
         display: block;
         font-weight: 700;
         margin-bottom: 8px;
       }
 
-      input[type="file"] {
+      input[type="file"],
+      select {
         display: block;
         width: 100%;
         margin-bottom: 14px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #fff;
+        font-size: 14px;
       }
 
       .actions {
@@ -63,6 +81,7 @@
         gap: 12px;
         align-items: center;
         flex-wrap: wrap;
+        margin-top: 8px;
       }
 
       button {
@@ -101,20 +120,54 @@
         word-break: break-word;
         display: none;
       }
+
+      .hint {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: -8px;
+        margin-bottom: 10px;
+      }
     </style>
   </head>
   <body>
     <main class="container">
       <h1>DubArabic AI</h1>
-      <p class="muted">ارفع الفيديو → التخزين في Supabase → تشغيل الـ Pipeline تلقائياً</p>
+      <p class="muted">
+        ارفع الفيديو → التخزين في Supabase → تشغيل الـ Pipeline تلقائيًا → دبلجة + ترجمة
+      </p>
 
       <section class="card">
-        <label for="file">اختيار الفيديو</label>
-        <input id="file" type="file" accept="video/*" />
+        <div class="grid">
+          <div>
+            <label for="file">اختيار الفيديو</label>
+            <input id="file" type="file" accept="video/*" />
+            <div id="fileName" class="file-name">لم يتم اختيار ملف بعد</div>
+          </div>
+
+          <div>
+            <label for="dialect">لهجة الدبلجة</label>
+            <select id="dialect">
+              <option value="msa">العربية الفصحى</option>
+              <option value="gulf">الخليجية</option>
+              <option value="egyptian">المصرية</option>
+              <option value="levantine">الشامية</option>
+              <option value="sudanese">السودانية</option>
+            </select>
+
+            <label for="subtitleMode">نوع الترجمة على الشاشة</label>
+            <select id="subtitleMode">
+              <option value="soft">Soft subtitles</option>
+              <option value="burned">Burned subtitles</option>
+              <option value="none">بدون ترجمة على الشاشة</option>
+            </select>
+            <div class="hint">
+              Soft = ترجمة قابلة للتشغيل والإيقاف، Burned = ترجمة محروقة داخل الفيديو
+            </div>
+          </div>
+        </div>
 
         <div class="actions">
           <button id="btn" disabled>رفع الفيديو</button>
-          <span id="fileName" class="file-name">لم يتم اختيار ملف بعد</span>
         </div>
 
         <progress id="prog" value="0" max="100"></progress>

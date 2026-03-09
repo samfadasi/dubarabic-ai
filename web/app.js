@@ -5,10 +5,14 @@ const btn = document.getElementById("btn");
 const out = document.getElementById("out");
 const prog = document.getElementById("prog");
 const fileNameEl = document.getElementById("fileName");
+const dialectEl = document.getElementById("dialect");
+const subtitleModeEl = document.getElementById("subtitleMode");
 
 function setBusy(isBusy) {
   btn.disabled = isBusy || !fileEl.files?.[0];
   fileEl.disabled = isBusy;
+  dialectEl.disabled = isBusy;
+  subtitleModeEl.disabled = isBusy;
 }
 
 function log(message) {
@@ -88,6 +92,10 @@ btn.addEventListener("click", async () => {
   const file = fileEl.files?.[0];
   if (!file) return;
 
+  const dialect = dialectEl.value;
+  const subtitleMode = subtitleModeEl.value;
+  const burnIn = subtitleMode === "burned";
+
   try {
     setBusy(true);
     prog.value = 0;
@@ -110,6 +118,9 @@ btn.addEventListener("click", async () => {
 
     const created = await apiJson(`${API_BASE}/videos/create`, {
       original_path: signed.path,
+      dialect,
+      subtitle_mode: subtitleMode,
+      burn_in: burnIn,
     });
 
     log({
@@ -117,6 +128,9 @@ btn.addEventListener("click", async () => {
       message: "تم رفع الفيديو وتسجيله بنجاح",
       storage_path: signed.path,
       video_id: created.id,
+      dialect,
+      subtitle_mode: subtitleMode,
+      burn_in: burnIn,
       next: "راقب status في جدول videos حتى تصل إلى completed",
     });
 

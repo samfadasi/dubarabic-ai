@@ -46,14 +46,14 @@ app.post("/upload/signed-url", async (req, res) => {
   try {
     const schema = z.object({
       fileName: z.string().min(1),
-      contentType: z.string().min(1)
+      contentType: z.string().min(1),
     });
 
     const parsed = schema.safeParse(req.body);
 
     if (!parsed.success) {
       return res.status(400).json({
-        error: parsed.error.flatten()
+        error: parsed.error.flatten(),
       });
     }
 
@@ -74,9 +74,8 @@ app.post("/upload/signed-url", async (req, res) => {
     return res.json({
       path: data.path,
       signedUrl: data.signedUrl,
-      token: data.token
+      token: data.token,
     });
-
   } catch (err) {
     console.error("signed-url endpoint error:", err);
     return res.status(500).json({ error: "Internal server error" });
@@ -93,25 +92,39 @@ app.post("/videos/create", async (req, res) => {
   try {
     const schema = z.object({
       user_email: z.string().email().optional(),
-      original_path: z.string().min(1)
+      original_path: z.string().min(1),
+      dialect: z
+        .enum(["msa", "gulf", "egyptian", "levantine", "sudanese"])
+        .optional(),
+      subtitle_mode: z.enum(["none", "soft", "burned"]).optional(),
+      burn_in: z.boolean().optional(),
     });
 
     const parsed = schema.safeParse(req.body);
 
     if (!parsed.success) {
       return res.status(400).json({
-        error: parsed.error.flatten()
+        error: parsed.error.flatten(),
       });
     }
 
-    const { user_email, original_path } = parsed.data;
+    const {
+      user_email,
+      original_path,
+      dialect,
+      subtitle_mode,
+      burn_in,
+    } = parsed.data;
 
     const { data, error } = await supabaseAdmin
       .from("videos")
       .insert({
         user_email: user_email ?? null,
         original_video: original_path,
-        status: "uploaded"
+        status: "uploaded",
+        dialect: dialect ?? "msa",
+        subtitle_mode: subtitle_mode ?? "soft",
+        burn_in: burn_in ?? false,
       })
       .select("id")
       .single();
@@ -122,9 +135,8 @@ app.post("/videos/create", async (req, res) => {
     }
 
     return res.json({
-      id: data.id
+      id: data.id,
     });
-
   } catch (err) {
     console.error("videos/create error:", err);
     return res.status(500).json({ error: "Internal server error" });
@@ -141,4 +153,4 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 app.listen(PORT, () => {
   console.log(`🚀 DubArabic API running on port ${PORT}`);
-});
+});});
