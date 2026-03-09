@@ -16,9 +16,12 @@ const POLL_MS = Number(process.env.POLL_MS || 1500);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
 const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
-const OPENAI_TTS_VOICE = process.env.OPENAI_TTS_VOICE || "marin";
 const OPENAI_SRT_TRANSCRIBE_MODEL =
   process.env.OPENAI_SRT_TRANSCRIBE_MODEL || "whisper-1";
+
+// أصوات افتراضية قابلة للتغيير من البيئة
+const OPENAI_TTS_VOICE_MALE = process.env.OPENAI_TTS_VOICE_MALE || "alloy";
+const OPENAI_TTS_VOICE_FEMALE = process.env.OPENAI_TTS_VOICE_FEMALE || "marin";
 
 type Segment = {
   id?: number | string;
@@ -33,6 +36,8 @@ type SubtitleSegment = {
   text: string;
 };
 
+type VoiceType = "male" | "female";
+
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -42,10 +47,18 @@ function safeErr(e: any) {
   return msg.length > 2500 ? msg.slice(0, 2500) + "…" : msg;
 }
 
+function normalizeText(text: string) {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.!?،؛:])/g, "$1")
+    .trim();
+}
+
 async function downloadFromStorage(storagePath: string, outFile: string) {
   const { data, error } = await supabaseAdmin.storage
     .from("videos")
     .download(storagePath);
+
   if (error) throw new Error(`Storage download error: ${error.message}`);
 
   const ab = await data.arrayBuffer();
@@ -58,11 +71,14 @@ async function uploadToStorage(
   contentType: string
 ) {
   const buf = fs.readFileSync(localFile);
-  const { error } = await supabaseAdmin.storage.from("videos").upload(
-    storagePath,
-    buf,
-    { contentType, upsert: true }
-  );
+
+  const { error } = await supabaseAdmin.storage
+    .from("videos")
+    .upload(storagePath, buf, {
+      contentType,
+      upsert: true,
+    });
+
   if (error) throw new Error(`Storage upload error: ${error.message}`);
 }
 
@@ -87,6 +103,7 @@ async function claimJob(fromStatus: string) {
     console.error("DB select error:", error.message);
     return null;
   }
+
   if (!data || data.length === 0) return null;
 
   const job = data[0];
@@ -169,15 +186,9 @@ async function getAudioDurationSeconds(audioPath: string): Promise<number> {
     "default=noprint_wrappers=1:nokey=1",
     audioPath,
   ]);
+
   const d = Number(String(stdout).trim());
   return Number.isFinite(d) && d > 0 ? d : 1;
-}
-
-function normalizeText(text: string) {
-  return text
-    .replace(/\s+/g, " ")
-    .replace(/\s+([,.!?،؛:])/g, "$1")
-    .trim();
 }
 
 function splitTranscriptToSegments(text: string, duration: number): Segment[] {
@@ -223,6 +234,7 @@ async function openaiTranscribeVerboseSegments(localAudioPath: string): Promise<
   });
 
   const json: any = await resp.json().catch(() => ({}));
+
   if (!resp.ok) {
     throw new Error(
       `OpenAI transcription error: ${resp.status} ${resp.statusText} - ${JSON.stringify(
@@ -274,7 +286,9 @@ async function stageTranscribe() {
     if (!transcript) throw new Error("Empty transcript");
 
     const finalSegments =
-      segments && segments.length ? segments : splitTranscriptToSegments(transcript, duration);
+      segments && segments.length
+        ? segments
+        : splitTranscriptToSegments(transcript, duration);
 
     await supabaseAdmin
       .from("videos")
@@ -450,9 +464,12 @@ async function openaiTranslateArabic(text: string) {
   });
 
   const json: any = await resp.json().catch(() => ({}));
+
   if (!resp.ok) {
     throw new Error(
-      `OpenAI chat error: ${resp.status} ${resp.statusText} - ${JSON.stringify(json)}`
+      `OpenAI chat error: ${resp.status} ${resp.statusText} - ${JSON.stringify(
+        json
+      )}`
     );
   }
 
@@ -535,15 +552,51 @@ async function stageTranslate() {
 }
 
 // ───────────────────────────────
-// TTS
+// TTS WITH AUTO VOICE MATCHING
 // ───────────────────────────────
 
-async function openaiTTS(text: string, outFile: string) {
+async function detectVoiceType(audioPath: string): Promise<VoiceType> {
+  try {
+    const { stderr } = await execFileAsync("ffmpeg", [
+      "-i",
+      audioPath,
+      "-af",
+      "astats=metadata=1:reset=1",
+      "-f",
+      "null",
+      "-",
+    ]);
+
+    const pitchMatches = stderr.match(/Mean_frequency:\s*([0-9.]+)/g);
+
+    if (!pitchMatches || pitchMatches.length === 0) {
+      return "male";
+    }
+
+    const values = pitchMatches
+      .map((v) => Number(v.split(":")[1]))
+      .filter((v) => !Number.isNaN(v) && Number.isFinite(v));
+
+    if (!values.length) return "male";
+
+    const avg = values.reduce((a, b) => a + b, 0) / values.length;
+
+    return avg > 165 ? "female" : "male";
+  } catch {
+    return "male";
+  }
+}
+
+function chooseArabicVoice(type: VoiceType) {
+  return type === "female" ? OPENAI_TTS_VOICE_FEMALE : OPENAI_TTS_VOICE_MALE;
+}
+
+async function openaiTTS(text: string, outFile: string, voice: string) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
 
   const payload = {
     model: OPENAI_TTS_MODEL,
-    voice: OPENAI_TTS_VOICE,
+    voice,
     input: text,
     format: "wav",
   };
@@ -571,11 +624,21 @@ async function stageTTS() {
   if (!job) return;
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dubarabic-tts-"));
+  const sourceAudioLocal = path.join(tmpDir, "src.wav");
   const ttsLocal = path.join(tmpDir, "ar.wav");
 
   try {
     if (!job.translated_text) throw new Error("translated_text missing");
-    await openaiTTS(job.translated_text, ttsLocal);
+    if (!job.audio_file) throw new Error("audio_file missing");
+
+    await downloadFromStorage(job.audio_file, sourceAudioLocal);
+
+    const voiceType = await detectVoiceType(sourceAudioLocal);
+    const selectedVoice = chooseArabicVoice(voiceType);
+
+    console.log("voice detected:", voiceType, "tts voice:", selectedVoice);
+
+    await openaiTTS(job.translated_text, ttsLocal, selectedVoice);
 
     const audioPath = `tts/${job.id}.wav`;
     await uploadToStorage(audioPath, ttsLocal, "audio/wav");
@@ -600,7 +663,7 @@ async function stageTTS() {
 }
 
 // ───────────────────────────────
-// RENDER: dubbed + soft subs + optional burn-in
+// RENDER
 // ───────────────────────────────
 
 async function mergeAudioVideo(videoIn: string, audioIn: string, outVideo: string) {
@@ -710,12 +773,10 @@ async function stageRender() {
     await downloadFromStorage(job.original_video, videoLocal);
     await downloadFromStorage(job.arabic_audio, audioLocal);
 
-    // dubbed fast
     await mergeAudioVideo(videoLocal, audioLocal, outLocal);
     const finalPath = `final/${job.id}.mp4`;
     await uploadToStorage(finalPath, outLocal, "video/mp4");
 
-    // soft subtitles
     let finalSoftPath: string | null = null;
     if (job.srt_file) {
       await downloadFromStorage(job.srt_file, srtLocal);
@@ -724,7 +785,6 @@ async function stageRender() {
       await uploadToStorage(finalSoftPath, softLocal, "video/mp4");
     }
 
-    // burn-in optional
     let burnedPath: string | null = null;
     const burn = Boolean(job.burn_in);
 
