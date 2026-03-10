@@ -6,23 +6,10 @@ import { z } from "zod";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 
 const app = express();
-
-/* --------------------------------------------------
-   App config
--------------------------------------------------- */
-
 const PORT = Number(process.env.PORT || 3000);
-
-/* --------------------------------------------------
-   Middleware
--------------------------------------------------- */
 
 app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "2mb" }));
-
-/* --------------------------------------------------
-   Validation schemas
--------------------------------------------------- */
 
 const uploadSignedUrlSchema = z.object({
   fileName: z.string().min(1, "fileName is required"),
@@ -32,16 +19,13 @@ const uploadSignedUrlSchema = z.object({
 const createVideoSchema = z.object({
   user_email: z.string().email().optional(),
   original_path: z.string().min(1, "original_path is required"),
+  processing_mode: z.enum(["dub_and_subs", "subtitles_only"]).optional(),
   dialect: z
     .enum(["msa", "gulf", "egyptian", "levantine", "sudanese"])
     .optional(),
   subtitle_mode: z.enum(["none", "soft", "burned"]).optional(),
   burn_in: z.boolean().optional(),
 });
-
-/* --------------------------------------------------
-   Helpers
--------------------------------------------------- */
 
 function sanitizeFileName(fileName: string) {
   return fileName
@@ -58,10 +42,6 @@ function handleUnexpectedError(
   console.error(`${context}:`, error);
   return res.status(500).json({ error: "Internal server error" });
 }
-
-/* --------------------------------------------------
-   Routes
--------------------------------------------------- */
 
 app.get("/", (_req, res) => {
   res.status(200).send("DubArabic AI API running");
@@ -114,16 +94,26 @@ app.post("/videos/create", async (req, res) => {
       });
     }
 
-    const { user_email, original_path, dialect, subtitle_mode, burn_in } =
-      parsed.data;
+    const {
+      user_email,
+      original_path,
+      processing_mode,
+      dialect,
+      subtitle_mode,
+      burn_in,
+    } = parsed.data;
+
+    const mode = processing_mode ?? "dub_and_subs";
+    const subtitleMode = subtitle_mode ?? "soft";
 
     const rowToInsert = {
       user_email: user_email ?? null,
       original_video: original_path,
       status: "uploaded",
-      dialect: dialect ?? "msa",
-      subtitle_mode: subtitle_mode ?? "soft",
-      burn_in: burn_in ?? false,
+      processing_mode: mode,
+      dialect: mode === "subtitles_only" ? null : (dialect ?? "msa"),
+      subtitle_mode: subtitleMode,
+      burn_in: subtitleMode === "burned" ? true : (burn_in ?? false),
     };
 
     const { data, error } = await supabaseAdmin
@@ -144,10 +134,6 @@ app.post("/videos/create", async (req, res) => {
     return handleUnexpectedError(res, "videos/create unexpected error", error);
   }
 });
-
-/* --------------------------------------------------
-   Start server
--------------------------------------------------- */
 
 app.listen(PORT, () => {
   console.log(`🚀 DubArabic API running on port ${PORT}`);

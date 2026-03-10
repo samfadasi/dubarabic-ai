@@ -12,9 +12,7 @@
         --bg-soft: #f7f7f7;
       }
 
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; }
 
       body {
         margin: 0;
@@ -133,7 +131,7 @@
     <main class="container">
       <h1>DubArabic AI</h1>
       <p class="muted">
-        ارفع الفيديو → التخزين في Supabase → تشغيل الـ Pipeline تلقائيًا → دبلجة + ترجمة
+        ارفع الفيديو → التخزين في Supabase → تشغيل الـ Pipeline تلقائيًا
       </p>
 
       <section class="card">
@@ -145,6 +143,12 @@
           </div>
 
           <div>
+            <label for="processingMode">نوع المعالجة</label>
+            <select id="processingMode">
+              <option value="dub_and_subs">دبلجة + ترجمة</option>
+              <option value="subtitles_only">ترجمة فقط بدون دبلجة</option>
+            </select>
+
             <label for="dialect">لهجة الدبلجة</label>
             <select id="dialect">
               <option value="msa">العربية الفصحى</option>
@@ -160,8 +164,9 @@
               <option value="burned">Burned subtitles</option>
               <option value="none">بدون ترجمة على الشاشة</option>
             </select>
+
             <div class="hint">
-              Soft = ترجمة قابلة للتشغيل والإيقاف، Burned = ترجمة محروقة داخل الفيديو
+              لو اخترت “ترجمة فقط بدون دبلجة”، فلن يتم توليد صوت عربي.
             </div>
           </div>
         </div>
@@ -171,7 +176,6 @@
         </div>
 
         <progress id="prog" value="0" max="100"></progress>
-
         <div id="out" class="log"></div>
       </section>
     </main>

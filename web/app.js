@@ -7,12 +7,14 @@ const prog = document.getElementById("prog");
 const fileNameEl = document.getElementById("fileName");
 const dialectEl = document.getElementById("dialect");
 const subtitleModeEl = document.getElementById("subtitleMode");
+const processingModeEl = document.getElementById("processingMode");
 
 function setBusy(isBusy) {
   btn.disabled = isBusy || !fileEl.files?.[0];
   fileEl.disabled = isBusy;
   dialectEl.disabled = isBusy;
   subtitleModeEl.disabled = isBusy;
+  processingModeEl.disabled = isBusy;
 }
 
 function log(message) {
@@ -54,8 +56,7 @@ function putWithProgress(signedUrl, file) {
 
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
-      const percent = Math.round((e.loaded / e.total) * 100);
-      prog.value = percent;
+      prog.value = Math.round((e.loaded / e.total) * 100);
     };
 
     xhr.onload = () => {
@@ -69,6 +70,11 @@ function putWithProgress(signedUrl, file) {
     xhr.onerror = () => reject(new Error("Upload network error"));
     xhr.send(file);
   });
+}
+
+function refreshDialectState() {
+  const subtitlesOnly = processingModeEl.value === "subtitles_only";
+  dialectEl.disabled = subtitlesOnly;
 }
 
 fileEl.addEventListener("change", () => {
@@ -88,10 +94,14 @@ fileEl.addEventListener("change", () => {
   btn.disabled = false;
 });
 
+processingModeEl.addEventListener("change", refreshDialectState);
+refreshDialectState();
+
 btn.addEventListener("click", async () => {
   const file = fileEl.files?.[0];
   if (!file) return;
 
+  const processingMode = processingModeEl.value;
   const dialect = dialectEl.value;
   const subtitleMode = subtitleModeEl.value;
   const burnIn = subtitleMode === "burned";
@@ -118,6 +128,7 @@ btn.addEventListener("click", async () => {
 
     const created = await apiJson(`${API_BASE}/videos/create`, {
       original_path: signed.path,
+      processing_mode: processingMode,
       dialect,
       subtitle_mode: subtitleMode,
       burn_in: burnIn,
@@ -128,7 +139,8 @@ btn.addEventListener("click", async () => {
       message: "تم رفع الفيديو وتسجيله بنجاح",
       storage_path: signed.path,
       video_id: created.id,
-      dialect,
+      processing_mode: processingMode,
+      dialect: processingMode === "subtitles_only" ? null : dialect,
       subtitle_mode: subtitleMode,
       burn_in: burnIn,
       next: "راقب status في جدول videos حتى تصل إلى completed",
@@ -139,5 +151,6 @@ btn.addEventListener("click", async () => {
     log(`ERROR: ${e?.message || e}`);
   } finally {
     setBusy(false);
+    refreshDialectState();
   }
 });
