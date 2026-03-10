@@ -22,9 +22,14 @@ const createVideoSchema = z.object({
   processing_mode: z.enum(["dub_and_subs", "subtitles_only"]).optional(),
   dialect: z
     .enum(["msa", "gulf", "egyptian", "levantine", "sudanese"])
+    .nullable()
     .optional(),
   subtitle_mode: z.enum(["none", "soft", "burned"]).optional(),
   burn_in: z.boolean().optional(),
+});
+
+const listVideosSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
 function sanitizeFileName(fileName: string) {
@@ -41,6 +46,21 @@ function handleUnexpectedError(
 ) {
   console.error(`${context}:`, error);
   return res.status(500).json({ error: "Internal server error" });
+}
+
+async function createSignedDownloadUrl(filePath: string | null) {
+  if (!filePath) return null;
+
+  const { data, error } = await supabaseAdmin.storage
+    .from("videos")
+    .createSignedUrl(filePath, 60 * 60);
+
+  if (error) {
+    console.error("signed download error:", error);
+    return null;
+  }
+
+  return data.signedUrl;
 }
 
 app.get("/", (_req, res) => {
@@ -127,11 +147,95 @@ app.post("/videos/create", async (req, res) => {
       return res.status(500).json({ error: error.message });
     }
 
-    return res.json({
-      id: data.id,
-    });
+    return res.json({ id: data.id });
   } catch (error) {
     return handleUnexpectedError(res, "videos/create unexpected error", error);
+  }
+});
+
+app.get("/videos", async (req, res) => {
+  try {
+    const parsed = listVideosSchema.safeParse(req.query);
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: parsed.error.flatten(),
+      });
+    }
+
+    const limit = parsed.data.limit ?? 20;
+
+    const { data, error } = await supabaseAdmin
+      .from("videos")
+      .select(
+        "id, status, created_at, processing_mode, dialect, subtitle_mode, final_video, final_soft_video, burned_video, srt_file"
+      )
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error("videos list error:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({ videos: data ?? [] });
+  } catch (error) {
+    return handleUnexpectedError(res, "videos list unexpected error", error);
+  }
+});
+
+app.get("/videos/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    const { data, error } = await supabaseAdmin
+      .from("videos")
+      .select(
+        "id, status, created_at, processing_mode, dialect, subtitle_mode, burn_in, final_video, final_soft_video, burned_video, srt_file"
+      )
+      .eq("id", id)
+      .single();
+
+    if (error) {
+      console.error("video get error:", error);
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    return res.json(data);
+  } catch (error) {
+    return handleUnexpectedError(res, "video get unexpected error", error);
+  }
+});
+
+app.get("/videos/:id/downloads", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    const { data, error } = await supabaseAdmin
+      .from("videos")
+      .select("id, status, final_video, final_soft_video, burned_video, srt_file")
+      .eq("id", id)
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    const final_video_url = await createSignedDownloadUrl(data.final_video);
+    const final_soft_video_url = await createSignedDownloadUrl(data.final_soft_video);
+    const burned_video_url = await createSignedDownloadUrl(data.burned_video);
+    const srt_file_url = await createSignedDownloadUrl(data.srt_file);
+
+    return res.json({
+      id: data.id,
+      status: data.status,
+      final_video_url,
+      final_soft_video_url,
+      burned_video_url,
+      srt_file_url,
+    });
+  } catch (error) {
+    return handleUnexpectedError(res, "video downloads unexpected error", error);
   }
 });
 
