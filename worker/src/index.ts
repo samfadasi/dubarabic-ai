@@ -10,6 +10,10 @@ import { supabaseAdmin } from "./supabaseAdmin.js";
 const execFileAsync = promisify(execFile);
 
 type Role = "audio" | "transcribe" | "translate" | "tts" | "render";
+type VoiceType = "male" | "female";
+type ProcessingMode = "dub_and_subs" | "subtitles_only";
+type SubtitleMode = "none" | "soft" | "burned";
+
 const ROLE = (process.env.PIPELINE_ROLE || "audio") as Role;
 const POLL_MS = Number(process.env.POLL_MS || 1500);
 
@@ -19,16 +23,17 @@ const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
 const OPENAI_SRT_TRANSCRIBE_MODEL =
   process.env.OPENAI_SRT_TRANSCRIBE_MODEL || "whisper-1";
 
-// أصوات قابلة للتعديل من البيئة
 const OPENAI_TTS_VOICE_MALE = process.env.OPENAI_TTS_VOICE_MALE || "alloy";
 const OPENAI_TTS_VOICE_FEMALE = process.env.OPENAI_TTS_VOICE_FEMALE || "marin";
 
-// سرعة الكلام في TTS
 const TTS_SPEED_MALE = Number(process.env.TTS_SPEED_MALE || "1.00");
 const TTS_SPEED_FEMALE = Number(process.env.TTS_SPEED_FEMALE || "1.02");
-
-// لو المقطع العربي أطول من الزمن الأصلي، نسمح بتمديد بسيط
 const MAX_STRETCH_RATIO = Number(process.env.MAX_STRETCH_RATIO || "1.15");
+
+// حجم الصوت الأصلي تحت الدبلجة
+const ORIGINAL_AUDIO_BED_VOLUME = Number(
+  process.env.ORIGINAL_AUDIO_BED_VOLUME || "0.22"
+);
 
 type Segment = {
   id?: number | string;
@@ -42,8 +47,6 @@ type SubtitleSegment = {
   end: number;
   text: string;
 };
-
-type VoiceType = "male" | "female";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -99,7 +102,7 @@ async function claimJob(fromStatus: string) {
   const { data, error } = await supabaseAdmin
     .from("videos")
     .select(
-      "id, original_video, audio_file, transcript, transcript_segments, translated_text, arabic_audio, final_video, final_soft_video, srt_file, burn_in, burned_video, status, created_at"
+      "id, original_video, audio_file, transcript, transcript_segments, translated_text, arabic_audio, final_video, final_soft_video, srt_file, burn_in, burned_video, status, created_at, dialect, subtitle_mode, processing_mode"
     )
     .eq("status", fromStatus)
     .order("created_at", { ascending: true })
@@ -124,9 +127,9 @@ async function claimJob(fromStatus: string) {
   return job;
 }
 
-// ───────────────────────────────
-// AUDIO
-// ───────────────────────────────
+/* ──────────────────────────────
+   AUDIO
+────────────────────────────── */
 
 async function extractAudio(videoFile: string, audioFile: string) {
   await execFileAsync("ffmpeg", [
@@ -178,9 +181,9 @@ async function stageAudio() {
   }
 }
 
-// ───────────────────────────────
-// TRANSCRIBE + GUARANTEED SEGMENTS
-// ───────────────────────────────
+/* ──────────────────────────────
+   TRANSCRIBE + SEGMENTS
+────────────────────────────── */
 
 async function getAudioDurationSeconds(audioPath: string): Promise<number> {
   const { stdout } = await execFileAsync("ffprobe", [
@@ -316,9 +319,9 @@ async function stageTranscribe() {
   }
 }
 
-// ───────────────────────────────
-// TRANSLATE + YOUTUBE-STYLE SRT
-// ───────────────────────────────
+/* ──────────────────────────────
+   TRANSLATE + SRT
+────────────────────────────── */
 
 function mergeShortSegments(
   segments: SubtitleSegment[],
@@ -444,20 +447,29 @@ function srtTime(sec: number) {
   return `${pad2(h)}:${pad2(m)}:${pad2(s)},${String(mm).padStart(3, "0")}`;
 }
 
-async function openaiTranslateArabic(text: string) {
+async function openaiTranslateArabic(text: string, dialect: string = "msa") {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+
+  const dialectInstructions: Record<string, string> = {
+    msa: "Translate to clear Modern Standard Arabic.",
+    gulf: "Translate to natural Gulf Arabic as spoken in everyday conversation.",
+    egyptian: "Translate to natural Egyptian Arabic as spoken in everyday conversation.",
+    levantine: "Translate to natural Levantine Arabic as spoken in everyday conversation.",
+    sudanese: "Translate to natural Sudanese Arabic as spoken in everyday conversation.",
+  };
+
+  const instruction = dialectInstructions[dialect] || dialectInstructions.msa;
 
   const payload = {
     model: OPENAI_TEXT_MODEL,
     messages: [
       {
         role: "system",
-        content:
-          "Translate to Modern Standard Arabic. Keep it natural and subtitle-friendly. Return Arabic only.",
+        content: `${instruction} Keep it natural, conversational, and suitable for dubbing/subtitles. Do not use Modern Standard Arabic unless the selected dialect is msa. Return Arabic only.`,
       },
       { role: "user", content: text },
     ],
-    temperature: 0.2,
+    temperature: 0.35,
   };
 
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -521,9 +533,11 @@ async function stageTranslate() {
 
     if (!segments.length) throw new Error("transcript_segments missing/empty");
 
+    const dialect = job.dialect || "msa";
+
     const translatedSegments: Array<Segment & { ar: string }> = [];
     for (const s of segments) {
-      const ar = await openaiTranslateArabic(s.text);
+      const ar = await openaiTranslateArabic(s.text, dialect);
       translatedSegments.push({ ...s, ar });
     }
 
@@ -546,7 +560,7 @@ async function stageTranslate() {
       })
       .eq("id", job.id);
 
-    console.log("translated + srt:", job.id);
+    console.log("translated + srt:", job.id, "dialect:", dialect);
 
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -557,9 +571,9 @@ async function stageTranslate() {
   }
 }
 
-// ───────────────────────────────
-// TTS SEGMENT-BASED + AUTO VOICE MATCHING
-// ───────────────────────────────
+/* ──────────────────────────────
+   TTS SEGMENT-BASED + AUTO VOICE MATCHING
+────────────────────────────── */
 
 async function detectVoiceType(audioPath: string): Promise<VoiceType> {
   try {
@@ -584,7 +598,6 @@ async function detectVoiceType(audioPath: string): Promise<VoiceType> {
     if (!values.length) return "male";
 
     const avg = values.reduce((a, b) => a + b, 0) / values.length;
-
     return avg > 165 ? "female" : "male";
   } catch {
     return "male";
@@ -655,7 +668,7 @@ async function createSilenceWav(durationSeconds: number, outFile: string) {
     "-f",
     "lavfi",
     "-i",
-    `anullsrc=r=24000:cl=mono`,
+    "anullsrc=r=24000:cl=mono",
     "-t",
     String(d),
     "-acodec",
@@ -691,13 +704,28 @@ async function stageTTS() {
   const job = await claimJob("translated");
   if (!job) return;
 
+  const processingMode = (job.processing_mode ||
+    "dub_and_subs") as ProcessingMode;
+
+  if (processingMode === "subtitles_only") {
+    await supabaseAdmin
+      .from("videos")
+      .update({
+        status: "tts_generated",
+        arabic_audio: null,
+      })
+      .eq("id", job.id);
+
+    console.log("tts skipped (subtitles_only):", job.id);
+    return;
+  }
+
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dubarabic-tts-"));
   const sourceAudioLocal = path.join(tmpDir, "src.wav");
   const finalTtsLocal = path.join(tmpDir, "ar_timeline.wav");
 
   try {
     if (!job.audio_file) throw new Error("audio_file missing");
-    if (!job.translated_text) throw new Error("translated_text missing");
     if (!Array.isArray(job.transcript_segments) || !job.transcript_segments.length) {
       throw new Error("transcript_segments missing/empty for segment-based TTS");
     }
@@ -707,23 +735,17 @@ async function stageTTS() {
     const voiceType = await detectVoiceType(sourceAudioLocal);
     const selectedVoice = chooseArabicVoice(voiceType);
     const selectedSpeed = chooseVoiceSpeed(voiceType);
+    const dialect = job.dialect || "msa";
 
     console.log("voice detected:", voiceType, "tts voice:", selectedVoice);
 
-    const translatedSegments = job.translated_text
-      ? null
-      : null; // placeholder for clarity
-
-    // نعيد ترجمة المقاطع من transcript_segments لو ما كانت محفوظة منفصلة
-    // بما أن translated_text الكامل موجود فقط، نعيد الترجمة segment-by-segment من النص الأصلي
     const originalSegments: Segment[] = job.transcript_segments as Segment[];
-
     const stitchedParts: string[] = [];
     let currentTimeline = 0;
 
     for (let i = 0; i < originalSegments.length; i++) {
       const seg = originalSegments[i];
-      const ar = await openaiTranslateArabic(seg.text);
+      const ar = await openaiTranslateArabic(seg.text, dialect);
 
       const segmentTts = path.join(tmpDir, `seg_${i}.wav`);
       await openaiTTS(ar, segmentTts, selectedVoice, selectedSpeed);
@@ -733,7 +755,6 @@ async function stageTTS() {
       const targetEnd = Math.max(targetStart + 0.2, seg.end);
       const targetDuration = targetEnd - targetStart;
 
-      // لو هناك فجوة قبل المقطع، نضيف صمت
       if (targetStart > currentTimeline) {
         const silenceDur = targetStart - currentTimeline;
         const silenceFile = path.join(tmpDir, `silence_${i}.wav`);
@@ -742,11 +763,9 @@ async function stageTTS() {
         currentTimeline += silenceDur;
       }
 
-      // لو المقطع العربي أطول من الهدف، نسمح بتمديد بسيط في التايملاين
-      let allowedDuration = targetDuration * MAX_STRETCH_RATIO;
+      const allowedDuration = targetDuration * MAX_STRETCH_RATIO;
 
       if (segAudioDuration > allowedDuration) {
-        // نحاول نسرّع المقطع قليلاً باستخدام atempo
         const spedFile = path.join(tmpDir, `seg_${i}_sped.wav`);
         const tempo = Math.min(1.35, segAudioDuration / allowedDuration);
 
@@ -768,7 +787,6 @@ async function stageTTS() {
       currentTimeline += segAudioDuration;
     }
 
-    // لو الصوت النهائي فاضي لأي سبب
     if (!stitchedParts.length) {
       throw new Error("No TTS segments were generated");
     }
@@ -797,9 +815,29 @@ async function stageTTS() {
   }
 }
 
-// ───────────────────────────────
-// RENDER
-// ───────────────────────────────
+/* ──────────────────────────────
+   RENDER
+────────────────────────────── */
+
+async function hasAudioStream(videoIn: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v",
+      "error",
+      "-select_streams",
+      "a",
+      "-show_entries",
+      "stream=index",
+      "-of",
+      "csv=p=0",
+      videoIn,
+    ]);
+
+    return String(stdout).trim().length > 0;
+  } catch {
+    return false;
+  }
+}
 
 async function mergeAudioVideo(videoIn: string, audioIn: string, outVideo: string) {
   await execFileAsync("ffmpeg", [
@@ -812,6 +850,38 @@ async function mergeAudioVideo(videoIn: string, audioIn: string, outVideo: strin
     "0:v:0",
     "-map",
     "1:a:0",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac",
+    "-shortest",
+    outVideo,
+  ]);
+}
+
+async function mixOriginalAndDubbedAudio(
+  videoIn: string,
+  dubbedAudioIn: string,
+  outVideo: string
+) {
+  const hasOriginalAudio = await hasAudioStream(videoIn);
+
+  if (!hasOriginalAudio) {
+    return mergeAudioVideo(videoIn, dubbedAudioIn, outVideo);
+  }
+
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-i",
+    videoIn,
+    "-i",
+    dubbedAudioIn,
+    "-filter_complex",
+    `[0:a]volume=${ORIGINAL_AUDIO_BED_VOLUME}[a0];[1:a]volume=1.0[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=0[aout]`,
+    "-map",
+    "0:v:0",
+    "-map",
+    "[aout]",
     "-c:v",
     "copy",
     "-c:a",
@@ -845,6 +915,35 @@ async function softSubtitles(
     "copy",
     "-c:a",
     "aac",
+    "-c:s",
+    "mov_text",
+    "-metadata:s:s:0",
+    "language=ara",
+    outVideo,
+  ]);
+}
+
+async function softSubtitlesOnly(
+  videoIn: string,
+  srtLocal: string,
+  outVideo: string
+) {
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-i",
+    videoIn,
+    "-i",
+    srtLocal,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a?",
+    "-map",
+    "1:0",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "copy",
     "-c:s",
     "mov_text",
     "-metadata:s:s:0",
@@ -889,6 +988,39 @@ async function burnSubtitles(
   ]);
 }
 
+async function burnSubtitlesOnly(
+  videoIn: string,
+  srtLocal: string,
+  outVideo: string
+) {
+  const vf = `subtitles=${srtLocal.replace(
+    /\\/g,
+    "/"
+  )}:force_style='FontName=Noto Naskh Arabic,FontSize=22,Outline=2,BorderStyle=3'`;
+
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-i",
+    videoIn,
+    "-vf",
+    vf,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a?",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "20",
+    "-c:a",
+    "aac",
+    "-shortest",
+    outVideo,
+  ]);
+}
+
 async function stageRender() {
   const job = await claimJob("tts_generated");
   if (!job) return;
@@ -900,36 +1032,73 @@ async function stageRender() {
   const srtLocal = path.join(tmpDir, "sub.srt");
   const softLocal = path.join(tmpDir, "soft.mp4");
   const burnedLocal = path.join(tmpDir, "burned.mp4");
+  const mixedLocal = path.join(tmpDir, "mixed.mp4");
 
   try {
     if (!job.original_video) throw new Error("original_video missing");
-    if (!job.arabic_audio) throw new Error("arabic_audio missing");
 
     await downloadFromStorage(job.original_video, videoLocal);
+
+    const processingMode = (job.processing_mode ||
+      "dub_and_subs") as ProcessingMode;
+    const subtitleMode = (job.subtitle_mode || "soft") as SubtitleMode;
+
+    let finalPath: string | null = null;
+    let finalSoftPath: string | null = null;
+    let burnedPath: string | null = null;
+
+    if (processingMode === "subtitles_only") {
+      if (subtitleMode === "soft" && job.srt_file) {
+        await downloadFromStorage(job.srt_file, srtLocal);
+        await softSubtitlesOnly(videoLocal, srtLocal, softLocal);
+
+        finalSoftPath = `final_soft/${job.id}.mp4`;
+        await uploadToStorage(finalSoftPath, softLocal, "video/mp4");
+      }
+
+      if (subtitleMode === "burned" && job.srt_file) {
+        await downloadFromStorage(job.srt_file, srtLocal);
+        await burnSubtitlesOnly(videoLocal, srtLocal, burnedLocal);
+
+        burnedPath = `burned/${job.id}.mp4`;
+        await uploadToStorage(burnedPath, burnedLocal, "video/mp4");
+      }
+
+      await supabaseAdmin
+        .from("videos")
+        .update({
+          status: "completed",
+          final_video: null,
+          final_soft_video: finalSoftPath,
+          burned_video: burnedPath,
+        })
+        .eq("id", job.id);
+
+      console.log("completed subtitles_only:", job.id);
+      return;
+    }
+
+    if (!job.arabic_audio) throw new Error("arabic_audio missing");
     await downloadFromStorage(job.arabic_audio, audioLocal);
 
-    await mergeAudioVideo(videoLocal, audioLocal, outLocal);
-    const finalPath = `final/${job.id}.mp4`;
-    await uploadToStorage(finalPath, outLocal, "video/mp4");
+    // دبلجة + الحفاظ على الضحك/الخلفية قدر الإمكان
+    await mixOriginalAndDubbedAudio(videoLocal, audioLocal, mixedLocal);
 
-    let finalSoftPath: string | null = null;
-    if (job.srt_file) {
+    finalPath = `final/${job.id}.mp4`;
+    await uploadToStorage(finalPath, mixedLocal, "video/mp4");
+
+    if (subtitleMode === "soft" && job.srt_file) {
       await downloadFromStorage(job.srt_file, srtLocal);
       await softSubtitles(videoLocal, audioLocal, srtLocal, softLocal);
+
       finalSoftPath = `final_soft/${job.id}.mp4`;
       await uploadToStorage(finalSoftPath, softLocal, "video/mp4");
     }
 
-    let burnedPath: string | null = null;
-    const burn = Boolean(job.burn_in);
-
-    if (burn) {
-      if (!job.srt_file) throw new Error("burn_in=true but srt_file missing");
-      if (!fs.existsSync(srtLocal)) {
-        await downloadFromStorage(job.srt_file, srtLocal);
-      }
-
+    if (subtitleMode === "burned" && job.srt_file) {
+      await downloadFromStorage(job.srt_file, srtLocal);
       await burnSubtitles(videoLocal, audioLocal, srtLocal, burnedLocal);
+
       burnedPath = `burned/${job.id}.mp4`;
       await uploadToStorage(burnedPath, burnedLocal, "video/mp4");
     }
@@ -944,7 +1113,14 @@ async function stageRender() {
       })
       .eq("id", job.id);
 
-    console.log("completed:", job.id, "soft:", !!finalSoftPath, "burned:", burn);
+    console.log(
+      "completed dub_and_subs:",
+      job.id,
+      "soft:",
+      !!finalSoftPath,
+      "burned:",
+      !!burnedPath
+    );
   } catch (e: any) {
     console.error("render failed:", job.id, safeErr(e));
     await markFailed(job.id, safeErr(e));
@@ -955,9 +1131,9 @@ async function stageRender() {
   }
 }
 
-// ───────────────────────────────
-// MAIN
-// ───────────────────────────────
+/* ──────────────────────────────
+   MAIN
+────────────────────────────── */
 
 async function runOnce() {
   if (ROLE === "audio") return stageAudio();
