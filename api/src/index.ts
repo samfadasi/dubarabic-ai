@@ -7,49 +7,73 @@ import { supabaseAdmin } from "./supabaseAdmin.js";
 
 const app = express();
 
-/*
---------------------------------------------------
-Middleware
---------------------------------------------------
-*/
+/* --------------------------------------------------
+   App config
+-------------------------------------------------- */
+
+const PORT = Number(process.env.PORT || 3000);
+
+/* --------------------------------------------------
+   Middleware
+-------------------------------------------------- */
 
 app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "2mb" }));
 
-/*
---------------------------------------------------
-Root
---------------------------------------------------
-*/
+/* --------------------------------------------------
+   Validation schemas
+-------------------------------------------------- */
+
+const uploadSignedUrlSchema = z.object({
+  fileName: z.string().min(1, "fileName is required"),
+  contentType: z.string().min(1, "contentType is required"),
+});
+
+const createVideoSchema = z.object({
+  user_email: z.string().email().optional(),
+  original_path: z.string().min(1, "original_path is required"),
+  dialect: z
+    .enum(["msa", "gulf", "egyptian", "levantine", "sudanese"])
+    .optional(),
+  subtitle_mode: z.enum(["none", "soft", "burned"]).optional(),
+  burn_in: z.boolean().optional(),
+});
+
+/* --------------------------------------------------
+   Helpers
+-------------------------------------------------- */
+
+function sanitizeFileName(fileName: string) {
+  return fileName
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^\w.\-]/g, "");
+}
+
+function handleUnexpectedError(
+  res: express.Response,
+  context: string,
+  error: unknown
+) {
+  console.error(`${context}:`, error);
+  return res.status(500).json({ error: "Internal server error" });
+}
+
+/* --------------------------------------------------
+   Routes
+-------------------------------------------------- */
 
 app.get("/", (_req, res) => {
   res.status(200).send("DubArabic AI API running");
 });
 
-/*
---------------------------------------------------
-Health Check
---------------------------------------------------
-*/
-
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-/*
---------------------------------------------------
-Generate Signed Upload URL
---------------------------------------------------
-*/
-
 app.post("/upload/signed-url", async (req, res) => {
   try {
-    const schema = z.object({
-      fileName: z.string().min(1),
-      contentType: z.string().min(1),
-    });
-
-    const parsed = schema.safeParse(req.body);
+    const parsed = uploadSignedUrlSchema.safeParse(req.body);
 
     if (!parsed.success) {
       return res.status(400).json({
@@ -58,8 +82,7 @@ app.post("/upload/signed-url", async (req, res) => {
     }
 
     const { fileName } = parsed.data;
-
-    const safeName = fileName.replace(/\s+/g, "_");
+    const safeName = sanitizeFileName(fileName) || "video.mp4";
     const path = `uploads/${Date.now()}_${safeName}`;
 
     const { data, error } = await supabaseAdmin.storage
@@ -76,31 +99,14 @@ app.post("/upload/signed-url", async (req, res) => {
       signedUrl: data.signedUrl,
       token: data.token,
     });
-  } catch (err) {
-    console.error("signed-url endpoint error:", err);
-    return res.status(500).json({ error: "Internal server error" });
+  } catch (error) {
+    return handleUnexpectedError(res, "upload/signed-url unexpected error", error);
   }
 });
 
-/*
---------------------------------------------------
-Create Video Record
---------------------------------------------------
-*/
-
 app.post("/videos/create", async (req, res) => {
   try {
-    const schema = z.object({
-      user_email: z.string().email().optional(),
-      original_path: z.string().min(1),
-      dialect: z
-        .enum(["msa", "gulf", "egyptian", "levantine", "sudanese"])
-        .optional(),
-      subtitle_mode: z.enum(["none", "soft", "burned"]).optional(),
-      burn_in: z.boolean().optional(),
-    });
-
-    const parsed = schema.safeParse(req.body);
+    const parsed = createVideoSchema.safeParse(req.body);
 
     if (!parsed.success) {
       return res.status(400).json({
@@ -111,16 +117,18 @@ app.post("/videos/create", async (req, res) => {
     const { user_email, original_path, dialect, subtitle_mode, burn_in } =
       parsed.data;
 
+    const rowToInsert = {
+      user_email: user_email ?? null,
+      original_video: original_path,
+      status: "uploaded",
+      dialect: dialect ?? "msa",
+      subtitle_mode: subtitle_mode ?? "soft",
+      burn_in: burn_in ?? false,
+    };
+
     const { data, error } = await supabaseAdmin
       .from("videos")
-      .insert({
-        user_email: user_email ?? null,
-        original_video: original_path,
-        status: "uploaded",
-        dialect: dialect ?? "msa",
-        subtitle_mode: subtitle_mode ?? "soft",
-        burn_in: burn_in ?? false,
-      })
+      .insert(rowToInsert)
       .select("id")
       .single();
 
@@ -132,19 +140,14 @@ app.post("/videos/create", async (req, res) => {
     return res.json({
       id: data.id,
     });
-  } catch (err) {
-    console.error("videos/create error:", err);
-    return res.status(500).json({ error: "Internal server error" });
+  } catch (error) {
+    return handleUnexpectedError(res, "videos/create unexpected error", error);
   }
 });
 
-/*
---------------------------------------------------
-Server Start
---------------------------------------------------
-*/
-
-const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+/* --------------------------------------------------
+   Start server
+-------------------------------------------------- */
 
 app.listen(PORT, () => {
   console.log(`🚀 DubArabic API running on port ${PORT}`);
