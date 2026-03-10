@@ -1,4 +1,23 @@
-const API_BASE = "https://dubarabic-ai.onrender.com";
+const { apiBase, supabaseUrl, supabaseAnonKey } = window.APP_CONFIG;
+const supabase = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+
+const authSection = document.getElementById("authSection");
+const appSection = document.getElementById("appSection");
+const authLog = document.getElementById("authLog");
+const currentUserEmail = document.getElementById("currentUserEmail");
+
+const showLoginBtn = document.getElementById("showLoginBtn");
+const showSignupBtn = document.getElementById("showSignupBtn");
+const loginFormWrap = document.getElementById("loginFormWrap");
+const signupFormWrap = document.getElementById("signupFormWrap");
+
+const loginEmail = document.getElementById("loginEmail");
+const loginPassword = document.getElementById("loginPassword");
+const signupEmail = document.getElementById("signupEmail");
+const signupPassword = document.getElementById("signupPassword");
+const loginBtn = document.getElementById("loginBtn");
+const signupBtn = document.getElementById("signupBtn");
+const logoutBtn = document.getElementById("logoutBtn");
 
 const fileEl = document.getElementById("file");
 const btn = document.getElementById("btn");
@@ -16,8 +35,13 @@ const statCompleted = document.getElementById("statCompleted");
 const statProcessing = document.getElementById("statProcessing");
 const statFailed = document.getElementById("statFailed");
 
-let activeVideoId = null;
 let pollingTimer = null;
+
+function showAuthLog(message) {
+  authLog.style.display = "block";
+  authLog.textContent =
+    typeof message === "string" ? message : JSON.stringify(message, null, 2);
+}
 
 function setBusy(isBusy) {
   btn.disabled = isBusy || !fileEl.files?.[0];
@@ -53,8 +77,7 @@ function statusClass(status) {
 }
 
 function processingLabel(mode) {
-  if (mode === "subtitles_only") return "ترجمة فقط";
-  return "دبلجة + ترجمة";
+  return mode === "subtitles_only" ? "ترجمة فقط" : "دبلجة + ترجمة";
 }
 
 function subtitleLabel(mode) {
@@ -63,8 +86,33 @@ function subtitleLabel(mode) {
   return "None";
 }
 
+function stopPolling() {
+  if (pollingTimer) {
+    clearTimeout(pollingTimer);
+    pollingTimer = null;
+  }
+}
+
+async function getAccessToken() {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token || null;
+}
+
 async function apiJson(url, options = {}) {
-  const res = await fetch(url, options);
+  const token = await getAccessToken();
+
+  const headers = new Headers(options.headers || {});
+  headers.set("Content-Type", headers.get("Content-Type") || "application/json");
+
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const res = await fetch(url, {
+    ...options,
+    headers,
+  });
+
   const json = await res.json().catch(() => ({}));
 
   if (!res.ok) {
@@ -142,14 +190,21 @@ function renderDownloads(downloads) {
 
 async function fetchDownloads(videoId) {
   try {
-    return await apiJson(`${API_BASE}/videos/${videoId}/downloads`);
+    return await apiJson(`${apiBase}/videos/${videoId}/downloads`, {
+      method: "GET",
+      headers: {},
+    });
   } catch {
     return null;
   }
 }
 
 async function fetchVideos() {
-  const data = await apiJson(`${API_BASE}/videos?limit=20`);
+  const data = await apiJson(`${apiBase}/videos?limit=20`, {
+    method: "GET",
+    headers: {},
+  });
+
   const rows = Array.isArray(data?.videos) ? data.videos : [];
 
   statTotal.textContent = String(rows.length);
@@ -198,14 +253,10 @@ async function fetchVideos() {
 }
 
 async function fetchVideoStatus(videoId) {
-  return apiJson(`${API_BASE}/videos/${videoId}`);
-}
-
-function stopPolling() {
-  if (pollingTimer) {
-    clearTimeout(pollingTimer);
-    pollingTimer = null;
-  }
+  return apiJson(`${apiBase}/videos/${videoId}`, {
+    method: "GET",
+    headers: {},
+  });
 }
 
 async function pollVideo(videoId) {
@@ -220,7 +271,7 @@ async function pollVideo(videoId) {
       dialect: row.dialect,
       message:
         row.status === "completed"
-          ? "اكتملت المعالجة. تم تحديث الداشبورد وروابط التحميل."
+          ? "اكتملت المعالجة. تم تحديث روابط التحميل."
           : "ما زالت المعالجة مستمرة...",
     });
 
@@ -237,6 +288,91 @@ async function pollVideo(videoId) {
     pollingTimer = setTimeout(() => pollVideo(videoId), 7000);
   }
 }
+
+function showLogin() {
+  loginFormWrap.classList.remove("hidden");
+  signupFormWrap.classList.add("hidden");
+}
+
+function showSignup() {
+  signupFormWrap.classList.remove("hidden");
+  loginFormWrap.classList.add("hidden");
+}
+
+async function updateAuthUI() {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session?.user) {
+    authSection.classList.remove("hidden");
+    appSection.classList.add("hidden");
+    refreshBtn.classList.add("hidden");
+    videosBody.innerHTML = `
+      <tr>
+        <td colspan="6" class="empty">سجل الدخول لعرض فيديوهاتك</td>
+      </tr>
+    `;
+    statTotal.textContent = "0";
+    statCompleted.textContent = "0";
+    statProcessing.textContent = "0";
+    statFailed.textContent = "0";
+    return;
+  }
+
+  authSection.classList.add("hidden");
+  appSection.classList.remove("hidden");
+  refreshBtn.classList.remove("hidden");
+  currentUserEmail.textContent = session.user.email || "—";
+
+  await fetchVideos();
+}
+
+showLoginBtn.addEventListener("click", showLogin);
+showSignupBtn.addEventListener("click", showSignup);
+
+loginBtn.addEventListener("click", async () => {
+  try {
+    const email = loginEmail.value.trim();
+    const password = loginPassword.value;
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) throw error;
+
+    showAuthLog("تم تسجيل الدخول بنجاح");
+    await updateAuthUI();
+  } catch (e) {
+    showAuthLog(`خطأ الدخول: ${e?.message || e}`);
+  }
+});
+
+signupBtn.addEventListener("click", async () => {
+  try {
+    const email = signupEmail.value.trim();
+    const password = signupPassword.value;
+
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+    });
+
+    if (error) throw error;
+
+    showAuthLog("تم إنشاء الحساب. تحقق من بريدك إن كان التأكيد مفعلًا.");
+  } catch (e) {
+    showAuthLog(`خطأ إنشاء الحساب: ${e?.message || e}`);
+  }
+});
+
+logoutBtn.addEventListener("click", async () => {
+  await supabase.auth.signOut();
+  stopPolling();
+  await updateAuthUI();
+});
 
 fileEl.addEventListener("change", () => {
   const file = fileEl.files?.[0];
@@ -283,9 +419,8 @@ btn.addEventListener("click", async () => {
 
     log("1) طلب Signed URL من السيرفر...");
 
-    const signed = await apiJson(`${API_BASE}/upload/signed-url`, {
+    const signed = await apiJson(`${apiBase}/upload/signed-url`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         fileName: file.name,
         contentType: file.type || "video/mp4",
@@ -301,9 +436,8 @@ btn.addEventListener("click", async () => {
 
     log("3) تسجيل job في قاعدة البيانات...");
 
-    const created = await apiJson(`${API_BASE}/videos/create`, {
+    const created = await apiJson(`${apiBase}/videos/create`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         original_path: signed.path,
         processing_mode: processingMode,
@@ -312,8 +446,6 @@ btn.addEventListener("click", async () => {
         burn_in: burnIn,
       }),
     });
-
-    activeVideoId = created.id;
 
     log({
       ok: true,
@@ -337,4 +469,8 @@ btn.addEventListener("click", async () => {
   }
 });
 
-fetchVideos();
+supabase.auth.onAuthStateChange(async () => {
+  await updateAuthUI();
+});
+
+updateAuthUI();

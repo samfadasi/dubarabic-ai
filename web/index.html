@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DubArabic AI</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
       :root {
         --bg: #0b1020;
@@ -43,6 +44,7 @@
         align-items: end;
         gap: 16px;
         margin-bottom: 24px;
+        flex-wrap: wrap;
       }
 
       .hero h1 {
@@ -64,12 +66,11 @@
         padding: 8px 12px;
         color: var(--muted);
         font-size: 13px;
-        white-space: nowrap;
       }
 
       .layout {
         display: grid;
-        grid-template-columns: 380px 1fr;
+        grid-template-columns: 360px 1fr;
         gap: 18px;
       }
 
@@ -90,11 +91,6 @@
         font-size: 20px;
       }
 
-      .muted {
-        color: var(--muted);
-        font-size: 14px;
-      }
-
       label {
         display: block;
         margin: 0 0 8px;
@@ -103,8 +99,9 @@
       }
 
       input[type="file"],
-      select,
-      input[type="text"] {
+      input[type="email"],
+      input[type="password"],
+      select {
         width: 100%;
         border: 1px solid var(--border);
         background: var(--panel-2);
@@ -136,19 +133,21 @@
         color: white;
       }
 
-      .btn-primary:disabled {
-        opacity: 0.55;
-        cursor: not-allowed;
-      }
-
       .btn-secondary {
         background: rgba(255,255,255,0.06);
         color: var(--text);
         border: 1px solid var(--border);
       }
 
-      .btn:hover:not(:disabled) {
-        transform: translateY(-1px);
+      .btn-danger {
+        background: rgba(231, 76, 60, 0.16);
+        color: #ffd0cb;
+        border: 1px solid rgba(231, 76, 60, 0.28);
+      }
+
+      .btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
       }
 
       progress {
@@ -272,11 +271,9 @@
         font-size: 12px;
       }
 
-      .hint {
+      .hint, .muted {
         color: var(--muted);
         font-size: 12px;
-        margin-top: -6px;
-        margin-bottom: 12px;
       }
 
       .empty {
@@ -289,74 +286,142 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 12px;
       }
+
+      .hidden { display: none !important; }
+
+      .auth-tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+
+      .user-box {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 14px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.04);
+        border-radius: 12px;
+      }
     </style>
   </head>
   <body>
+    <script>
+      window.APP_CONFIG = {
+        apiBase: "https://dubarabic-ai.onrender.com",
+        supabaseUrl: https://hzeqysfouudexrkgofbb.supabase.co
+
+        supabaseAnonKey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6ZXF5c2ZvdXVkZXhya2dvZmJiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjA3NTM4NiwiZXhwIjoyMDg3NjUxMzg2fQ.LBj8PX5LHVJb-hP2Y8SJynHQWscRBreb07NJFfE9Zww
+
+      };
+    </script>
+
     <main class="container">
       <div class="hero">
         <div>
           <h1>DubArabic AI</h1>
           <p>
-            منصة دبلجة وترجمة الفيديو إلى العربية مع اختيار اللهجة، الترجمة المدمجة أو
-            القابلة للتشغيل، وتتبع حالة المعالجة وتنزيل النتائج.
+            منصة دبلجة وترجمة الفيديو إلى العربية مع حساب شخصي، Dashboard خاص،
+            وتتبع الحالة وتنزيل النتائج بعد المعالجة.
           </p>
         </div>
-        <div class="badge">Upload • Translate • Dub • Download</div>
+        <div class="badge">Auth • Dashboard • Downloads</div>
       </div>
 
       <div class="layout">
         <section class="card">
-          <h2>رفع فيديو جديد</h2>
+          <div id="authSection">
+            <h2>الدخول إلى المنصة</h2>
 
-          <label for="file">ملف الفيديو</label>
-          <input id="file" type="file" accept="video/*" />
-          <div id="fileName" class="muted">لم يتم اختيار ملف بعد</div>
-
-          <label for="processingMode">نوع المعالجة</label>
-          <select id="processingMode">
-            <option value="dub_and_subs">دبلجة + ترجمة</option>
-            <option value="subtitles_only">ترجمة فقط بدون دبلجة</option>
-          </select>
-
-          <div class="row">
-            <div>
-              <label for="dialect">اللهجة</label>
-              <select id="dialect">
-                <option value="msa">العربية الفصحى</option>
-                <option value="gulf">الخليجية</option>
-                <option value="egyptian">المصرية</option>
-                <option value="levantine">الشامية</option>
-                <option value="sudanese">السودانية</option>
-              </select>
+            <div class="auth-tabs">
+              <button id="showLoginBtn" class="btn btn-secondary">تسجيل الدخول</button>
+              <button id="showSignupBtn" class="btn btn-secondary">إنشاء حساب</button>
             </div>
 
-            <div>
-              <label for="subtitleMode">نوع الترجمة</label>
-              <select id="subtitleMode">
-                <option value="soft">Soft subtitles</option>
-                <option value="burned">Burned subtitles</option>
-                <option value="none">بدون ترجمة على الشاشة</option>
-              </select>
+            <div id="loginFormWrap">
+              <label for="loginEmail">البريد الإلكتروني</label>
+              <input id="loginEmail" type="email" placeholder="you@example.com" />
+
+              <label for="loginPassword">كلمة المرور</label>
+              <input id="loginPassword" type="password" placeholder="••••••••" />
+
+              <button id="loginBtn" class="btn btn-primary">دخول</button>
             </div>
+
+            <div id="signupFormWrap" class="hidden">
+              <label for="signupEmail">البريد الإلكتروني</label>
+              <input id="signupEmail" type="email" placeholder="you@example.com" />
+
+              <label for="signupPassword">كلمة المرور</label>
+              <input id="signupPassword" type="password" placeholder="8 أحرف أو أكثر" />
+
+              <button id="signupBtn" class="btn btn-primary">إنشاء حساب</button>
+            </div>
+
+            <div id="authLog" class="log"></div>
           </div>
 
-          <div class="hint">
-            في وضع "ترجمة فقط" لن يتم إنشاء صوت عربي، وسيتم إنتاج فيديو ترجمة فقط حسب النوع المختار.
+          <div id="appSection" class="hidden">
+            <div class="user-box">
+              <div>
+                <div style="font-weight:700">الحساب الحالي</div>
+                <div id="currentUserEmail" class="muted">—</div>
+              </div>
+              <button id="logoutBtn" class="btn btn-danger">خروج</button>
+            </div>
+
+            <h2>رفع فيديو جديد</h2>
+
+            <label for="file">ملف الفيديو</label>
+            <input id="file" type="file" accept="video/*" />
+            <div id="fileName" class="muted">لم يتم اختيار ملف بعد</div>
+
+            <label for="processingMode">نوع المعالجة</label>
+            <select id="processingMode">
+              <option value="dub_and_subs">دبلجة + ترجمة</option>
+              <option value="subtitles_only">ترجمة فقط بدون دبلجة</option>
+            </select>
+
+            <div class="row">
+              <div>
+                <label for="dialect">اللهجة</label>
+                <select id="dialect">
+                  <option value="msa">العربية الفصحى</option>
+                  <option value="gulf">الخليجية</option>
+                  <option value="egyptian">المصرية</option>
+                  <option value="levantine">الشامية</option>
+                  <option value="sudanese">السودانية</option>
+                </select>
+              </div>
+
+              <div>
+                <label for="subtitleMode">نوع الترجمة</label>
+                <select id="subtitleMode">
+                  <option value="soft">Soft subtitles</option>
+                  <option value="burned">Burned subtitles</option>
+                  <option value="none">بدون ترجمة على الشاشة</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="hint">
+              في وضع "ترجمة فقط" لن يتم إنشاء صوت عربي.
+            </div>
+
+            <button id="btn" class="btn btn-primary" disabled>رفع وتشغيل المعالجة</button>
+
+            <progress id="prog" value="0" max="100"></progress>
+            <div id="out" class="log"></div>
           </div>
-
-          <button id="btn" class="btn btn-primary" disabled>رفع وتشغيل المعالجة</button>
-
-          <progress id="prog" value="0" max="100"></progress>
-
-          <div id="out" class="log"></div>
         </section>
 
         <section class="card">
           <div class="toolbar">
             <h2 style="margin:0">Dashboard</h2>
-            <div>
-              <button id="refreshBtn" class="btn btn-secondary">تحديث</button>
-            </div>
+            <button id="refreshBtn" class="btn btn-secondary hidden">تحديث</button>
           </div>
 
           <div class="stats">
@@ -392,7 +457,7 @@
               </thead>
               <tbody id="videosBody">
                 <tr>
-                  <td colspan="6" class="empty">لا توجد فيديوهات بعد</td>
+                  <td colspan="6" class="empty">سجل الدخول لعرض فيديوهاتك</td>
                 </tr>
               </tbody>
             </table>

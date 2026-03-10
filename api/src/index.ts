@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import { z } from "zod";
 import { supabaseAdmin } from "./supabaseAdmin.js";
@@ -17,7 +17,6 @@ const uploadSignedUrlSchema = z.object({
 });
 
 const createVideoSchema = z.object({
-  user_email: z.string().email().optional(),
   original_path: z.string().min(1, "original_path is required"),
   processing_mode: z.enum(["dub_and_subs", "subtitles_only"]).optional(),
   dialect: z
@@ -32,6 +31,15 @@ const listVideosSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
+type AuthUser = {
+  id: string;
+  email: string | null;
+};
+
+type AuthedRequest = Request & {
+  authUser?: AuthUser;
+};
+
 function sanitizeFileName(fileName: string) {
   return fileName
     .trim()
@@ -40,12 +48,50 @@ function sanitizeFileName(fileName: string) {
 }
 
 function handleUnexpectedError(
-  res: express.Response,
+  res: Response,
   context: string,
   error: unknown
 ) {
   console.error(`${context}:`, error);
   return res.status(500).json({ error: "Internal server error" });
+}
+
+function getBearerToken(req: Request) {
+  const authHeader = req.headers.authorization || "";
+  if (!authHeader.startsWith("Bearer ")) return null;
+  return authHeader.slice("Bearer ".length).trim();
+}
+
+async function requireAuth(
+  req: AuthedRequest,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const token = getBearerToken(req);
+
+    if (!token) {
+      return res.status(401).json({ error: "Missing bearer token" });
+    }
+
+    const {
+      data: { user },
+      error,
+    } = await supabaseAdmin.auth.getUser(token);
+
+    if (error || !user) {
+      return res.status(401).json({ error: "Invalid or expired token" });
+    }
+
+    req.authUser = {
+      id: user.id,
+      email: user.email ?? null,
+    };
+
+    return next();
+  } catch (error) {
+    return handleUnexpectedError(res, "requireAuth unexpected error", error);
+  }
 }
 
 async function createSignedDownloadUrl(filePath: string | null) {
@@ -71,7 +117,7 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/upload/signed-url", async (req, res) => {
+app.post("/upload/signed-url", requireAuth, async (req: AuthedRequest, res) => {
   try {
     const parsed = uploadSignedUrlSchema.safeParse(req.body);
 
@@ -83,7 +129,8 @@ app.post("/upload/signed-url", async (req, res) => {
 
     const { fileName } = parsed.data;
     const safeName = sanitizeFileName(fileName) || "video.mp4";
-    const path = `uploads/${Date.now()}_${safeName}`;
+    const userPrefix = req.authUser?.id || "anonymous";
+    const path = `uploads/${userPrefix}/${Date.now()}_${safeName}`;
 
     const { data, error } = await supabaseAdmin.storage
       .from("videos")
@@ -104,7 +151,7 @@ app.post("/upload/signed-url", async (req, res) => {
   }
 });
 
-app.post("/videos/create", async (req, res) => {
+app.post("/videos/create", requireAuth, async (req: AuthedRequest, res) => {
   try {
     const parsed = createVideoSchema.safeParse(req.body);
 
@@ -115,7 +162,6 @@ app.post("/videos/create", async (req, res) => {
     }
 
     const {
-      user_email,
       original_path,
       processing_mode,
       dialect,
@@ -127,7 +173,8 @@ app.post("/videos/create", async (req, res) => {
     const subtitleMode = subtitle_mode ?? "soft";
 
     const rowToInsert = {
-      user_email: user_email ?? null,
+      user_id: req.authUser!.id,
+      user_email: req.authUser!.email,
       original_video: original_path,
       status: "uploaded",
       processing_mode: mode,
@@ -153,7 +200,7 @@ app.post("/videos/create", async (req, res) => {
   }
 });
 
-app.get("/videos", async (req, res) => {
+app.get("/videos", requireAuth, async (req: AuthedRequest, res) => {
   try {
     const parsed = listVideosSchema.safeParse(req.query);
 
@@ -170,6 +217,7 @@ app.get("/videos", async (req, res) => {
       .select(
         "id, status, created_at, processing_mode, dialect, subtitle_mode, final_video, final_soft_video, burned_video, srt_file"
       )
+      .eq("user_id", req.authUser!.id)
       .order("created_at", { ascending: false })
       .limit(limit);
 
@@ -184,7 +232,7 @@ app.get("/videos", async (req, res) => {
   }
 });
 
-app.get("/videos/:id", async (req, res) => {
+app.get("/videos/:id", requireAuth, async (req: AuthedRequest, res) => {
   try {
     const id = req.params.id;
 
@@ -194,10 +242,10 @@ app.get("/videos/:id", async (req, res) => {
         "id, status, created_at, processing_mode, dialect, subtitle_mode, burn_in, final_video, final_soft_video, burned_video, srt_file"
       )
       .eq("id", id)
+      .eq("user_id", req.authUser!.id)
       .single();
 
-    if (error) {
-      console.error("video get error:", error);
+    if (error || !data) {
       return res.status(404).json({ error: "Video not found" });
     }
 
@@ -207,7 +255,7 @@ app.get("/videos/:id", async (req, res) => {
   }
 });
 
-app.get("/videos/:id/downloads", async (req, res) => {
+app.get("/videos/:id/downloads", requireAuth, async (req: AuthedRequest, res) => {
   try {
     const id = req.params.id;
 
@@ -215,6 +263,7 @@ app.get("/videos/:id/downloads", async (req, res) => {
       .from("videos")
       .select("id, status, final_video, final_soft_video, burned_video, srt_file")
       .eq("id", id)
+      .eq("user_id", req.authUser!.id)
       .single();
 
     if (error || !data) {
