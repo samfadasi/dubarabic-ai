@@ -113,9 +113,16 @@ function refreshDialectState() {
 }
 
 function setLoggedOutUI() {
+  console.log("UI -> LOGGED OUT");
+
   authSection.classList.remove("hidden");
   appSection.classList.add("hidden");
+
+  authSection.style.display = "block";
+  appSection.style.display = "none";
+
   refreshBtn.classList.add("hidden");
+  refreshBtn.style.display = "none";
 
   videosBody.innerHTML = `
     <tr>
@@ -130,9 +137,17 @@ function setLoggedOutUI() {
 }
 
 function setLoggedInUI(email) {
+  console.log("UI -> LOGGED IN", email);
+
   authSection.classList.add("hidden");
   appSection.classList.remove("hidden");
+
+  authSection.style.display = "none";
+  appSection.style.display = "block";
+
   refreshBtn.classList.remove("hidden");
+  refreshBtn.style.display = "inline-block";
+
   currentUserEmail.textContent = email || "—";
 }
 
