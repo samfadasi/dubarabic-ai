@@ -52,14 +52,6 @@ function clearAuthLog() {
   authLog.textContent = "";
 }
 
-function setBusy(isBusy) {
-  btn.disabled = isBusy || !fileEl.files?.[0];
-  fileEl.disabled = isBusy;
-  dialectEl.disabled = isBusy || processingModeEl.value === "subtitles_only";
-  subtitleModeEl.disabled = isBusy;
-  processingModeEl.disabled = isBusy;
-}
-
 function log(message) {
   out.style.display = "block";
   out.textContent =
@@ -105,6 +97,43 @@ function stopPolling() {
     clearTimeout(pollingTimer);
     pollingTimer = null;
   }
+}
+
+function setBusy(isBusy) {
+  btn.disabled = isBusy || !fileEl.files?.[0];
+  fileEl.disabled = isBusy;
+  dialectEl.disabled = isBusy || processingModeEl.value === "subtitles_only";
+  subtitleModeEl.disabled = isBusy;
+  processingModeEl.disabled = isBusy;
+}
+
+function refreshDialectState() {
+  const subtitlesOnly = processingModeEl.value === "subtitles_only";
+  dialectEl.disabled = subtitlesOnly;
+}
+
+function setLoggedOutUI() {
+  authSection.classList.remove("hidden");
+  appSection.classList.add("hidden");
+  refreshBtn.classList.add("hidden");
+
+  videosBody.innerHTML = `
+    <tr>
+      <td colspan="6" class="empty">سجل الدخول لعرض فيديوهاتك</td>
+    </tr>
+  `;
+
+  statTotal.textContent = "0";
+  statCompleted.textContent = "0";
+  statProcessing.textContent = "0";
+  statFailed.textContent = "0";
+}
+
+function setLoggedInUI(email) {
+  authSection.classList.add("hidden");
+  appSection.classList.remove("hidden");
+  refreshBtn.classList.remove("hidden");
+  currentUserEmail.textContent = email || "—";
 }
 
 async function getAccessToken() {
@@ -163,11 +192,6 @@ function putWithProgress(signedUrl, file) {
     xhr.onerror = () => reject(new Error("Upload network error"));
     xhr.send(file);
   });
-}
-
-function refreshDialectState() {
-  const subtitlesOnly = processingModeEl.value === "subtitles_only";
-  dialectEl.disabled = subtitlesOnly;
 }
 
 function renderDownloads(downloads) {
@@ -326,32 +350,29 @@ function showSignup() {
 }
 
 async function updateAuthUI() {
-  const {
-    data: { session },
-  } = await sb.auth.getSession();
+  try {
+    const {
+      data: { session },
+    } = await sb.auth.getSession();
 
-  if (!session?.user) {
-    authSection.classList.remove("hidden");
-    appSection.classList.add("hidden");
-    refreshBtn.classList.add("hidden");
-    videosBody.innerHTML = `
-      <tr>
-        <td colspan="6" class="empty">سجل الدخول لعرض فيديوهاتك</td>
-      </tr>
-    `;
-    statTotal.textContent = "0";
-    statCompleted.textContent = "0";
-    statProcessing.textContent = "0";
-    statFailed.textContent = "0";
-    return;
+    if (!session?.user) {
+      setLoggedOutUI();
+      return;
+    }
+
+    setLoggedInUI(session.user.email || "—");
+
+    try {
+      await fetchVideos();
+    } catch (e) {
+      console.error("FETCH VIDEOS AFTER LOGIN ERROR:", e);
+      showAuthLog(`تم الدخول لكن تعذر تحميل الداشبورد: ${e?.message || e}`);
+    }
+  } catch (e) {
+    console.error("UPDATE AUTH UI ERROR:", e);
+    setLoggedOutUI();
+    showAuthLog(`خطأ في تحديث واجهة الدخول: ${e?.message || e}`);
   }
-
-  authSection.classList.add("hidden");
-  appSection.classList.remove("hidden");
-  refreshBtn.classList.remove("hidden");
-  currentUserEmail.textContent = session.user.email || "—";
-
-  await fetchVideos();
 }
 
 showLoginBtn.addEventListener("click", showLogin);
@@ -380,7 +401,14 @@ loginBtn.addEventListener("click", async () => {
       ok: true,
       message: "تم تسجيل الدخول بنجاح",
       user: data.user?.email || null,
+      hasSession: Boolean(data.session),
     });
+
+    const {
+      data: { session },
+    } = await sb.auth.getSession();
+
+    console.log("SESSION AFTER LOGIN:", session);
 
     await updateAuthUI();
   } catch (e) {
@@ -414,7 +442,10 @@ signupBtn.addEventListener("click", async () => {
       ok: true,
       message: "تم إنشاء الحساب",
       user: data.user?.email || null,
-      session: Boolean(data.session),
+      hasSession: Boolean(data.session),
+      note: data.session
+        ? "تم إنشاء Session مباشرة."
+        : "لا توجد Session حالياً. قد تحتاج لتأكيد البريد أو تسجيل الدخول يدويًا.",
     });
   } catch (e) {
     console.error("SIGNUP ERROR:", e);
@@ -453,6 +484,8 @@ refreshBtn.addEventListener("click", async () => {
   refreshBtn.disabled = true;
   try {
     await fetchVideos();
+  } catch (e) {
+    showAuthLog(`تعذر تحديث الداشبورد: ${e?.message || e}`);
   } finally {
     refreshBtn.disabled = false;
   }
@@ -526,7 +559,8 @@ btn.addEventListener("click", async () => {
   }
 });
 
-sb.auth.onAuthStateChange(async () => {
+sb.auth.onAuthStateChange(async (event, session) => {
+  console.log("AUTH STATE CHANGED:", event, session);
   await updateAuthUI();
 });
 
