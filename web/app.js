@@ -233,7 +233,8 @@ async function fetchDownloads(videoId) {
     return await apiJson(`${apiBase}/videos/${videoId}/downloads`, {
       method: "GET",
     });
-  } catch {
+  } catch (e) {
+    console.error("FETCH DOWNLOADS ERROR:", e);
     return null;
   }
 }
@@ -332,6 +333,7 @@ async function pollVideo(videoId) {
 
     pollingTimer = setTimeout(() => pollVideo(videoId), 5000);
   } catch (e) {
+    console.error("POLL ERROR:", e);
     log(`Polling error: ${e?.message || e}`);
     pollingTimer = setTimeout(() => pollVideo(videoId), 7000);
   }
@@ -354,6 +356,8 @@ async function updateAuthUI() {
     const {
       data: { session },
     } = await sb.auth.getSession();
+
+    console.log("UPDATE AUTH UI SESSION:", session);
 
     if (!session?.user) {
       setLoggedOutUI();
@@ -397,6 +401,10 @@ loginBtn.addEventListener("click", async () => {
 
     if (error) throw error;
 
+    console.log("LOGIN SUCCESS DATA:", data);
+
+    setLoggedInUI(data.user?.email || email);
+
     showAuthLog({
       ok: true,
       message: "تم تسجيل الدخول بنجاح",
@@ -404,13 +412,12 @@ loginBtn.addEventListener("click", async () => {
       hasSession: Boolean(data.session),
     });
 
-    const {
-      data: { session },
-    } = await sb.auth.getSession();
-
-    console.log("SESSION AFTER LOGIN:", session);
-
-    await updateAuthUI();
+    try {
+      await fetchVideos();
+    } catch (e) {
+      console.error("FETCH VIDEOS AFTER LOGIN ERROR:", e);
+      showAuthLog(`تم الدخول، لكن تعذر تحميل الداشبورد: ${e?.message || e}`);
+    }
   } catch (e) {
     console.error("LOGIN ERROR:", e);
     showAuthLog(`خطأ الدخول: ${e?.message || e}`);
@@ -438,6 +445,8 @@ signupBtn.addEventListener("click", async () => {
 
     if (error) throw error;
 
+    console.log("SIGNUP SUCCESS DATA:", data);
+
     showAuthLog({
       ok: true,
       message: "تم إنشاء الحساب",
@@ -456,7 +465,11 @@ signupBtn.addEventListener("click", async () => {
 });
 
 logoutBtn.addEventListener("click", async () => {
-  await sb.auth.signOut();
+  try {
+    await sb.auth.signOut();
+  } catch (e) {
+    console.error("LOGOUT ERROR:", e);
+  }
   stopPolling();
   await updateAuthUI();
 });
@@ -485,6 +498,7 @@ refreshBtn.addEventListener("click", async () => {
   try {
     await fetchVideos();
   } catch (e) {
+    console.error("REFRESH DASHBOARD ERROR:", e);
     showAuthLog(`تعذر تحديث الداشبورد: ${e?.message || e}`);
   } finally {
     refreshBtn.disabled = false;
