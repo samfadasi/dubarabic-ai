@@ -15,8 +15,6 @@
         --muted: #a9b4c8;
         --primary: #4f8cff;
         --primary-2: #76a6ff;
-        --success: #2ecc71;
-        --warn: #f39c12;
         --danger: #e74c3c;
       }
 
@@ -311,9 +309,9 @@
   <body>
     <script>
       window.APP_CONFIG = {
-        apiBase:https://hzeqysfouudexrkgofbb.supabase.co
-        supabaseUrl: https://hzeqysfouudexrkgofbb.supabase.co
-        supabaseAnonKey:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6ZXF5c2ZvdXVkZXhya2dvZmJiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIwNzUzODYsImV4cCI6MjA4NzY1MTM4Nn0.ivOJ9I_OpXlYRM4W9uLMg1QCGAjJBs8IzJEMO9b6sHs
+        apiBase: https://dubarabic-upload.onrender.com/,
+        supabaseUrl: "//hzeqysfouudexrkgofbb.supabase.co",
+        supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6ZXF5c2ZvdXVkZXhya2dvZmJiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIwNzUzODYsImV4cCI6MjA4NzY1MTM4Nn0.ivOJ9I_OpXlYRM4W9uLMg1QCGAjJBs8IzJEMO9b6sHs"
       };
     </script>
 
@@ -335,8 +333,8 @@
             <h2>الدخول إلى المنصة</h2>
 
             <div class="auth-tabs">
-              <button id="showLoginBtn" class="btn btn-secondary">تسجيل الدخول</button>
-              <button id="showSignupBtn" class="btn btn-secondary">إنشاء حساب</button>
+              <button id="showLoginBtn" class="btn btn-secondary" type="button">تسجيل الدخول</button>
+              <button id="showSignupBtn" class="btn btn-secondary" type="button">إنشاء حساب</button>
             </div>
 
             <div id="loginFormWrap">
@@ -346,7 +344,7 @@
               <label for="loginPassword">كلمة المرور</label>
               <input id="loginPassword" type="password" placeholder="••••••••" />
 
-              <button id="loginBtn" class="btn btn-primary">دخول</button>
+              <button id="loginBtn" class="btn btn-primary" type="button">دخول</button>
             </div>
 
             <div id="signupFormWrap" class="hidden">
@@ -356,7 +354,7 @@
               <label for="signupPassword">كلمة المرور</label>
               <input id="signupPassword" type="password" placeholder="8 أحرف أو أكثر" />
 
-              <button id="signupBtn" class="btn btn-primary">إنشاء حساب</button>
+              <button id="signupBtn" class="btn btn-primary" type="button">إنشاء حساب</button>
             </div>
 
             <div id="authLog" class="log"></div>
@@ -368,7 +366,7 @@
                 <div style="font-weight:700">الحساب الحالي</div>
                 <div id="currentUserEmail" class="muted">—</div>
               </div>
-              <button id="logoutBtn" class="btn btn-danger">خروج</button>
+              <button id="logoutBtn" class="btn btn-danger" type="button">خروج</button>
             </div>
 
             <h2>رفع فيديو جديد</h2>
@@ -409,7 +407,7 @@
               في وضع "ترجمة فقط" لن يتم إنشاء صوت عربي.
             </div>
 
-            <button id="btn" class="btn btn-primary" disabled>رفع وتشغيل المعالجة</button>
+            <button id="btn" class="btn btn-primary" disabled type="button">رفع وتشغيل المعالجة</button>
 
             <progress id="prog" value="0" max="100"></progress>
             <div id="out" class="log"></div>
@@ -419,7 +417,7 @@
         <section class="card">
           <div class="toolbar">
             <h2 style="margin:0">Dashboard</h2>
-            <button id="refreshBtn" class="btn btn-secondary hidden">تحديث</button>
+            <button id="refreshBtn" class="btn btn-secondary hidden" type="button">تحديث</button>
           </div>
 
           <div class="stats">
