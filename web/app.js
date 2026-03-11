@@ -1,5 +1,9 @@
-const { apiBase, supabaseUrl, supabaseAnonKey } = window.APP_CONFIG;
-const supabase = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+const appConfig = window.APP_CONFIG;
+const apiBase = appConfig.apiBase;
+const sb = window.supabase.createClient(
+  appConfig.supabaseUrl,
+  appConfig.supabaseAnonKey
+);
 
 const authSection = document.getElementById("authSection");
 const appSection = document.getElementById("appSection");
@@ -43,6 +47,11 @@ function showAuthLog(message) {
     typeof message === "string" ? message : JSON.stringify(message, null, 2);
 }
 
+function clearAuthLog() {
+  authLog.style.display = "none";
+  authLog.textContent = "";
+}
+
 function setBusy(isBusy) {
   btn.disabled = isBusy || !fileEl.files?.[0];
   fileEl.disabled = isBusy;
@@ -55,6 +64,11 @@ function log(message) {
   out.style.display = "block";
   out.textContent =
     typeof message === "string" ? message : JSON.stringify(message, null, 2);
+}
+
+function clearLog() {
+  out.style.display = "none";
+  out.textContent = "";
 }
 
 function formatFileSize(bytes) {
@@ -94,7 +108,7 @@ function stopPolling() {
 }
 
 async function getAccessToken() {
-  const { data } = await supabase.auth.getSession();
+  const { data } = await sb.auth.getSession();
   return data.session?.access_token || null;
 }
 
@@ -102,7 +116,9 @@ async function apiJson(url, options = {}) {
   const token = await getAccessToken();
 
   const headers = new Headers(options.headers || {});
-  headers.set("Content-Type", headers.get("Content-Type") || "application/json");
+  if (!headers.has("Content-Type") && options.method && options.method !== "GET") {
+    headers.set("Content-Type", "application/json");
+  }
 
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
@@ -192,7 +208,6 @@ async function fetchDownloads(videoId) {
   try {
     return await apiJson(`${apiBase}/videos/${videoId}/downloads`, {
       method: "GET",
-      headers: {},
     });
   } catch {
     return null;
@@ -202,19 +217,29 @@ async function fetchDownloads(videoId) {
 async function fetchVideos() {
   const data = await apiJson(`${apiBase}/videos?limit=20`, {
     method: "GET",
-    headers: {},
   });
 
   const rows = Array.isArray(data?.videos) ? data.videos : [];
 
   statTotal.textContent = String(rows.length);
-  statCompleted.textContent = String(rows.filter(v => v.status === "completed").length);
+  statCompleted.textContent = String(
+    rows.filter((v) => v.status === "completed").length
+  );
   statProcessing.textContent = String(
-    rows.filter(v =>
-      ["uploaded", "processing", "audio_extracted", "transcribed", "translated", "tts_generated"].includes(v.status)
+    rows.filter((v) =>
+      [
+        "uploaded",
+        "processing",
+        "audio_extracted",
+        "transcribed",
+        "translated",
+        "tts_generated",
+      ].includes(v.status)
     ).length
   );
-  statFailed.textContent = String(rows.filter(v => v.status === "failed").length);
+  statFailed.textContent = String(
+    rows.filter((v) => v.status === "failed").length
+  );
 
   if (!rows.length) {
     videosBody.innerHTML = `
@@ -255,7 +280,6 @@ async function fetchVideos() {
 async function fetchVideoStatus(videoId) {
   return apiJson(`${apiBase}/videos/${videoId}`, {
     method: "GET",
-    headers: {},
   });
 }
 
@@ -290,11 +314,13 @@ async function pollVideo(videoId) {
 }
 
 function showLogin() {
+  clearAuthLog();
   loginFormWrap.classList.remove("hidden");
   signupFormWrap.classList.add("hidden");
 }
 
 function showSignup() {
+  clearAuthLog();
   signupFormWrap.classList.remove("hidden");
   loginFormWrap.classList.add("hidden");
 }
@@ -302,7 +328,7 @@ function showSignup() {
 async function updateAuthUI() {
   const {
     data: { session },
-  } = await supabase.auth.getSession();
+  } = await sb.auth.getSession();
 
   if (!session?.user) {
     authSection.classList.remove("hidden");
@@ -333,43 +359,73 @@ showSignupBtn.addEventListener("click", showSignup);
 
 loginBtn.addEventListener("click", async () => {
   try {
+    loginBtn.disabled = true;
+    clearAuthLog();
+
     const email = loginEmail.value.trim();
     const password = loginPassword.value;
 
-    const { error } = await supabase.auth.signInWithPassword({
+    if (!email || !password) {
+      throw new Error("أدخل البريد الإلكتروني وكلمة المرور");
+    }
+
+    const { data, error } = await sb.auth.signInWithPassword({
       email,
       password,
     });
 
     if (error) throw error;
 
-    showAuthLog("تم تسجيل الدخول بنجاح");
+    showAuthLog({
+      ok: true,
+      message: "تم تسجيل الدخول بنجاح",
+      user: data.user?.email || null,
+    });
+
     await updateAuthUI();
   } catch (e) {
+    console.error("LOGIN ERROR:", e);
     showAuthLog(`خطأ الدخول: ${e?.message || e}`);
+  } finally {
+    loginBtn.disabled = false;
   }
 });
 
 signupBtn.addEventListener("click", async () => {
   try {
+    signupBtn.disabled = true;
+    clearAuthLog();
+
     const email = signupEmail.value.trim();
     const password = signupPassword.value;
 
-    const { error } = await supabase.auth.signUp({
+    if (!email || !password) {
+      throw new Error("أدخل البريد الإلكتروني وكلمة المرور");
+    }
+
+    const { data, error } = await sb.auth.signUp({
       email,
       password,
     });
 
     if (error) throw error;
 
-    showAuthLog("تم إنشاء الحساب. تحقق من بريدك إن كان التأكيد مفعلًا.");
+    showAuthLog({
+      ok: true,
+      message: "تم إنشاء الحساب",
+      user: data.user?.email || null,
+      session: Boolean(data.session),
+    });
   } catch (e) {
+    console.error("SIGNUP ERROR:", e);
     showAuthLog(`خطأ إنشاء الحساب: ${e?.message || e}`);
+  } finally {
+    signupBtn.disabled = false;
   }
 });
 
 logoutBtn.addEventListener("click", async () => {
-  await supabase.auth.signOut();
+  await sb.auth.signOut();
   stopPolling();
   await updateAuthUI();
 });
@@ -378,8 +434,7 @@ fileEl.addEventListener("change", () => {
   const file = fileEl.files?.[0];
 
   prog.value = 0;
-  out.style.display = "none";
-  out.textContent = "";
+  clearLog();
 
   if (!file) {
     fileNameEl.textContent = "لم يتم اختيار ملف بعد";
@@ -415,6 +470,7 @@ btn.addEventListener("click", async () => {
   try {
     setBusy(true);
     prog.value = 0;
+    clearLog();
     stopPolling();
 
     log("1) طلب Signed URL من السيرفر...");
@@ -462,6 +518,7 @@ btn.addEventListener("click", async () => {
     await fetchVideos();
     pollVideo(created.id);
   } catch (e) {
+    console.error("UPLOAD ERROR:", e);
     log(`ERROR: ${e?.message || e}`);
   } finally {
     setBusy(false);
@@ -469,7 +526,7 @@ btn.addEventListener("click", async () => {
   }
 });
 
-supabase.auth.onAuthStateChange(async () => {
+sb.auth.onAuthStateChange(async () => {
   await updateAuthUI();
 });
 
