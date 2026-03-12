@@ -112,17 +112,22 @@ function refreshDialectState() {
   dialectEl.disabled = subtitlesOnly;
 }
 
-function setLoggedOutUI() {
-  console.log("UI -> LOGGED OUT");
+function showLoginTab() {
+  clearAuthLog();
+  loginFormWrap.classList.remove("hidden");
+  signupFormWrap.classList.add("hidden");
+}
 
+function showSignupTab() {
+  clearAuthLog();
+  signupFormWrap.classList.remove("hidden");
+  loginFormWrap.classList.add("hidden");
+}
+
+function setLoggedOutUI() {
   authSection.classList.remove("hidden");
   appSection.classList.add("hidden");
-
-  authSection.style.display = "block";
-  appSection.style.display = "none";
-
   refreshBtn.classList.add("hidden");
-  refreshBtn.style.display = "none";
 
   videosBody.innerHTML = `
     <tr>
@@ -137,17 +142,9 @@ function setLoggedOutUI() {
 }
 
 function setLoggedInUI(email) {
-  console.log("UI -> LOGGED IN", email);
-
   authSection.classList.add("hidden");
   appSection.classList.remove("hidden");
-
-  authSection.style.display = "none";
-  appSection.style.display = "block";
-
   refreshBtn.classList.remove("hidden");
-  refreshBtn.style.display = "inline-block";
-
   currentUserEmail.textContent = email || "—";
 }
 
@@ -262,24 +259,13 @@ async function fetchVideos() {
   const rows = Array.isArray(data?.videos) ? data.videos : [];
 
   statTotal.textContent = String(rows.length);
-  statCompleted.textContent = String(
-    rows.filter((v) => v.status === "completed").length
-  );
+  statCompleted.textContent = String(rows.filter(v => v.status === "completed").length);
   statProcessing.textContent = String(
-    rows.filter((v) =>
-      [
-        "uploaded",
-        "processing",
-        "audio_extracted",
-        "transcribed",
-        "translated",
-        "tts_generated",
-      ].includes(v.status)
+    rows.filter(v =>
+      ["uploaded", "processing", "audio_extracted", "transcribed", "translated", "tts_generated"].includes(v.status)
     ).length
   );
-  statFailed.textContent = String(
-    rows.filter((v) => v.status === "failed").length
-  );
+  statFailed.textContent = String(rows.filter(v => v.status === "failed").length);
 
   if (!rows.length) {
     videosBody.innerHTML = `
@@ -354,18 +340,6 @@ async function pollVideo(videoId) {
   }
 }
 
-function showLogin() {
-  clearAuthLog();
-  loginFormWrap.classList.remove("hidden");
-  signupFormWrap.classList.add("hidden");
-}
-
-function showSignup() {
-  clearAuthLog();
-  signupFormWrap.classList.remove("hidden");
-  loginFormWrap.classList.add("hidden");
-}
-
 async function updateAuthUI() {
   try {
     const {
@@ -384,18 +358,18 @@ async function updateAuthUI() {
     try {
       await fetchVideos();
     } catch (e) {
-      console.error("FETCH VIDEOS AFTER LOGIN ERROR:", e);
+      console.error("FETCH VIDEOS ERROR:", e);
       showAuthLog(`تم الدخول لكن تعذر تحميل الداشبورد: ${e?.message || e}`);
     }
   } catch (e) {
     console.error("UPDATE AUTH UI ERROR:", e);
     setLoggedOutUI();
-    showAuthLog(`خطأ في تحديث واجهة الدخول: ${e?.message || e}`);
+    showAuthLog(`خطأ في تحديث الواجهة: ${e?.message || e}`);
   }
 }
 
-showLoginBtn.addEventListener("click", showLogin);
-showSignupBtn.addEventListener("click", showSignup);
+showLoginBtn.addEventListener("click", showLoginTab);
+showSignupBtn.addEventListener("click", showSignupTab);
 
 loginBtn.addEventListener("click", async () => {
   try {
@@ -416,7 +390,7 @@ loginBtn.addEventListener("click", async () => {
 
     if (error) throw error;
 
-    console.log("LOGIN SUCCESS DATA:", data);
+    console.log("LOGIN SUCCESS:", data);
 
     setLoggedInUI(data.user?.email || email);
 
@@ -431,7 +405,7 @@ loginBtn.addEventListener("click", async () => {
       await fetchVideos();
     } catch (e) {
       console.error("FETCH VIDEOS AFTER LOGIN ERROR:", e);
-      showAuthLog(`تم الدخول، لكن تعذر تحميل الداشبورد: ${e?.message || e}`);
+      showAuthLog(`تم الدخول لكن تعذر تحميل الداشبورد: ${e?.message || e}`);
     }
   } catch (e) {
     console.error("LOGIN ERROR:", e);
@@ -460,7 +434,7 @@ signupBtn.addEventListener("click", async () => {
 
     if (error) throw error;
 
-    console.log("SIGNUP SUCCESS DATA:", data);
+    console.log("SIGNUP SUCCESS:", data);
 
     showAuthLog({
       ok: true,
@@ -468,8 +442,8 @@ signupBtn.addEventListener("click", async () => {
       user: data.user?.email || null,
       hasSession: Boolean(data.session),
       note: data.session
-        ? "تم إنشاء Session مباشرة."
-        : "لا توجد Session حالياً. قد تحتاج لتأكيد البريد أو تسجيل الدخول يدويًا.",
+        ? "تم إنشاء جلسة مباشرة."
+        : "قد تحتاج لتأكيد البريد أو تسجيل الدخول يدويًا.",
     });
   } catch (e) {
     console.error("SIGNUP ERROR:", e);
@@ -513,7 +487,7 @@ refreshBtn.addEventListener("click", async () => {
   try {
     await fetchVideos();
   } catch (e) {
-    console.error("REFRESH DASHBOARD ERROR:", e);
+    console.error("REFRESH ERROR:", e);
     showAuthLog(`تعذر تحديث الداشبورد: ${e?.message || e}`);
   } finally {
     refreshBtn.disabled = false;
